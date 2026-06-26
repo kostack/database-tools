@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: database-tools
+  mongodb:
+    uri: mongodb://localhost:27017/test
+  r2dbc:
+    url: r2dbc:mysql://localhost:3306/test
+    username: root
+    password: root
+    pool:
+      enabled: true
+      max-size: 20
+      initial-size: 10
+      max-idle-time: 30m
+
+
