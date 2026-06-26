@@ -13,7 +13,7 @@ plugins {
   jacoco
 }
 
-group = "io.github.database-tools"
+group = "io.github.kostack"
 version = providers.gradleProperty("projectVersion").getOrElse("1.0.0")
 description = "Database tools"
 
