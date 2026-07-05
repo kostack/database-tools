@@ -6,10 +6,8 @@ import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.data.domain.Pageable
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate
 import org.springframework.data.mongodb.core.query.Query
-import org.springframework.stereotype.Component
 import kotlin.reflect.KClass
 
-@Component
 class MongoDbPaginator(
   private val reactiveMongoTemplate: ReactiveMongoTemplate
 ) {

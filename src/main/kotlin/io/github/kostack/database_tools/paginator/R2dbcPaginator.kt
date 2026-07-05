@@ -6,10 +6,8 @@ import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.data.domain.Pageable
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.relational.core.query.Query
-import org.springframework.stereotype.Component
 import kotlin.reflect.KClass
 
-@Component
 class R2dbcPaginator(
   private val entityTemplate: R2dbcEntityTemplate
 ) {

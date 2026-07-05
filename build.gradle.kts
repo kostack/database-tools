@@ -3,12 +3,14 @@ import org.gradle.testing.jacoco.tasks.JacocoReport
 
 plugins {
   kotlin("jvm") version "2.3.0"
+  kotlin("kapt") version "2.3.0"
   kotlin("plugin.spring") version "2.3.0"
   kotlin("plugin.serialization") version "2.3.0"
   id("org.springframework.boot") version "4.1.0"
   id("io.spring.dependency-management") version "1.1.7"
   id("com.vanniktech.maven.publish") version "0.33.0"
   id("java-test-fixtures")
+  id("java-library")
   id("com.diffplug.spotless") version "8.4.0"
   jacoco
 }
@@ -16,6 +18,9 @@ plugins {
 group = "io.github.kostack"
 version = providers.gradleProperty("projectVersion").getOrElse("1.0.0")
 description = "Database tools"
+
+val r2dbcMysqlVersion = "1.3.0"
+val swaggerAnnotationsVersion = "2.2.49"
 
 java {
   toolchain {
@@ -40,8 +45,8 @@ dependencies {
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
   implementation("org.jetbrains.kotlin:kotlin-reflect")
 
-  implementation("org.springframework.boot:spring-boot-starter-webflux")
-  implementation("org.springframework.boot:spring-boot-configuration-processor")
+  api("org.springframework.boot:spring-boot-starter-webflux")
+  kapt("org.springframework.boot:spring-boot-configuration-processor")
 
   compileOnly("org.springframework.boot:spring-boot-starter-data-mongodb-reactive")
   testImplementation("org.springframework.boot:spring-boot-starter-data-mongodb-reactive")
@@ -52,11 +57,11 @@ dependencies {
   compileOnly("org.springframework.data:spring-data-r2dbc")
   testImplementation("org.springframework.data:spring-data-r2dbc")
 
-  compileOnly("io.asyncer:r2dbc-mysql:1.3.0")
-  testImplementation("io.asyncer:r2dbc-mysql:1.3.0")
+  compileOnly("io.asyncer:r2dbc-mysql:$r2dbcMysqlVersion")
+  testImplementation("io.asyncer:r2dbc-mysql:$r2dbcMysqlVersion")
 
-  compileOnly("io.swagger.core.v3:swagger-annotations:2.2.49")
-  testImplementation("io.swagger.core.v3:swagger-annotations:2.2.49")
+  compileOnly("io.swagger.core.v3:swagger-annotations:$swaggerAnnotationsVersion")
+  testImplementation("io.swagger.core.v3:swagger-annotations:$swaggerAnnotationsVersion")
 
   testImplementation("org.springframework.boot:spring-boot-starter-test")
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -71,7 +76,7 @@ dependencies {
   testFixturesImplementation("org.springframework.boot:spring-boot-autoconfigure")
   testFixturesImplementation("org.springframework.boot:spring-boot-starter-data-mongodb-reactive")
   testFixturesImplementation("org.springframework.boot:spring-boot-starter-data-r2dbc")
-  testFixturesImplementation("io.asyncer:r2dbc-mysql:1.3.0")
+  testFixturesImplementation("io.asyncer:r2dbc-mysql:$r2dbcMysqlVersion")
 }
 
 kotlin {
@@ -90,7 +95,11 @@ val installGitHook =
     description = "Installs a git pre-commit hook to enforce formatting rules"
     doLast {
       val hookSource = file("scripts/pre-commit")
-      val hookTarget = file(".git/hooks/pre-commit")
+      val hooksDir = file(".git/hooks")
+      val hookTarget = hooksDir.resolve("pre-commit")
+      check(hookSource.isFile) { "Git hook source not found: ${hookSource.path}" }
+      check(hooksDir.isDirectory) { "Git hooks directory not found: ${hooksDir.path}" }
+
       if (!hookTarget.exists()) {
         hookSource.copyTo(hookTarget, overwrite = false)
       }
@@ -98,13 +107,8 @@ val installGitHook =
     }
   }
 
-tasks.named("assemble") {
-  dependsOn(installGitHook)
-}
-
 tasks.named<Test>("test") {
   useJUnitPlatform()
-  dependsOn(installGitHook)
 
   finalizedBy(tasks.named("jacocoTestReport"))
   reports.junitXml.required.set(true)
@@ -130,6 +134,8 @@ tasks.named<JacocoReport>("jacocoTestReport") {
 }
 
 tasks.named<JacocoCoverageVerification>("jacocoTestCoverageVerification") {
+  dependsOn(tasks.named("test"))
+
   violationRules {
     rule {
       limit {
@@ -142,7 +148,6 @@ tasks.named<JacocoCoverageVerification>("jacocoTestCoverageVerification") {
 tasks.named("check") {
   dependsOn(tasks.named("jacocoTestCoverageVerification"))
   dependsOn(tasks.named("spotlessCheck"))
-  dependsOn(tasks.named("test"))
 }
 
 tasks.named("bootJar") {

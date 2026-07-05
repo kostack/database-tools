@@ -5,9 +5,7 @@ import kotlinx.coroutines.reactor.awaitSingle
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.r2dbc.core.DatabaseClient
-import org.springframework.stereotype.Component
 
-@Component
 class R2dbcDbPurger(
   private val databaseClient: DatabaseClient
 ) {
