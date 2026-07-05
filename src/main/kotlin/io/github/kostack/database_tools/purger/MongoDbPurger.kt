@@ -5,9 +5,7 @@ import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.data.mongodb.core.ReactiveMongoOperations
-import org.springframework.stereotype.Component
 
-@Component
 class MongoDbPurger(
   private val reactiveMongoOperations: ReactiveMongoOperations
 ) {
