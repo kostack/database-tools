@@ -72,7 +72,8 @@ class DatabaseToolsAutoConfigurationTest {
     fun reactiveMongoTemplate(): ReactiveMongoTemplate = mockk(relaxed = true)
 
     @Bean
-    fun reactiveMongoOperations(): ReactiveMongoOperations = reactiveMongoTemplate()
+    fun reactiveMongoOperations(reactiveMongoTemplate: ReactiveMongoTemplate): ReactiveMongoOperations =
+      reactiveMongoTemplate
   }
 
   @Configuration(proxyBeanMethods = false)
