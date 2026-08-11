@@ -15,7 +15,12 @@ import org.springframework.data.mongodb.core.ReactiveMongoTemplate
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.r2dbc.core.DatabaseClient
 
-@AutoConfiguration
+@AutoConfiguration(
+  afterName = [
+    "org.springframework.boot.data.mongodb.autoconfigure.DataMongoReactiveAutoConfiguration",
+    "org.springframework.boot.data.r2dbc.autoconfigure.DataR2dbcAutoConfiguration"
+  ]
+)
 class DatabaseToolsAutoConfiguration {
   @Configuration(proxyBeanMethods = false)
   @ConditionalOnClass(name = ["org.springframework.data.mongodb.core.ReactiveMongoTemplate"])
