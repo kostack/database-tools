@@ -509,4 +509,13 @@ class SqlQueryMapperTest {
   fun `toQuery rejects fields targeting a joined table`() {
     assertThrows<IllegalArgumentException> { SqlQueryMapper.toQuery(JoinedFilter()) }
   }
+
+  data class AggregateFilter(
+    @QueryField(aggregate = Aggregate.COUNT, operator = QueryOperator.GTE) val minOrders: Long? = 2
+  )
+
+  @Test
+  fun `toQuery rejects aggregate fields`() {
+    assertThrows<IllegalArgumentException> { SqlQueryMapper.toQuery(AggregateFilter()) }
+  }
 }

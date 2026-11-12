@@ -6,14 +6,6 @@ import org.springframework.data.mongodb.core.query.Query
 import java.util.regex.Pattern
 
 object MongoQueryMapper : QueryMapper<Criteria>() {
-  /**
-   * Maps the `@QueryField` properties of [source] into a query.
-   *
-   * The result is a copy of [base] (sort, paging, projection, etc. preserved; [base] itself is
-   * not mutated) with `$and: [required, mapped...]` added. Top-level keys in Mongo are implicitly
-   * ANDed with the existing base criteria. A [base] that already has a top-level `$and` key
-   * cannot be extended this way and Spring will throw.
-   */
   fun toQuery(
     source: Any,
     base: Query = Query(),

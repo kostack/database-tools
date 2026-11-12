@@ -1,7 +1,9 @@
 package io.github.kostack.database_tools.r2dbc.join
 
+import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.annotation.QueryField
+import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import io.r2dbc.spi.ConnectionFactories
 import io.r2dbc.spi.ConnectionFactory
@@ -61,6 +63,44 @@ data class UserOrderFilter(
   @QueryField(table = "o") val status: String? = null,
   @QueryField(table = "o", name = "total", operator = QueryOperator.GTE) val minTotal: Int? = null,
   @QueryField(table = "i") val sku: String? = null
+)
+
+data class UserStatsRow(
+  val id: Long,
+  val name: String,
+  @SelectAggregate(table = "s", function = Aggregate.COUNT) val orderCount: Long,
+  @SelectAggregate(table = "s", function = Aggregate.SUM, name = "total") val totalSum: Long?,
+  @SelectAggregate(table = "s", function = Aggregate.AVG, name = "total") val avgTotal: Double?,
+  @SelectAggregate(table = "s", function = Aggregate.MIN, name = "total") val minTotal: Int?,
+  @SelectAggregate(table = "s", function = Aggregate.MAX, name = "total") val maxTotal: Int?
+)
+
+data class UserStatsFilter(
+  /** Plain criteria on an AGGREGATE alias scope the aggregation. */
+  @QueryField(table = "s") val status: String? = null,
+  @QueryField(table = "s", aggregate = Aggregate.COUNT, operator = QueryOperator.GTE) val minOrders: Long? = null,
+  @QueryField(
+    table = "s",
+    aggregate = Aggregate.COUNT,
+    operator = QueryOperator.IN
+  ) val orderCounts: List<Long>? = null,
+  @QueryField(
+    table = "s",
+    aggregate = Aggregate.AVG,
+    name = "total",
+    operator = QueryOperator.GT
+  ) val avgAbove: Int? = null
+)
+
+/** IS_NULL ignores the value and is always active (ignoreEmpty = false). */
+data class UsersWithoutOrdersFilter(
+  @QueryField(
+    table = "s",
+    aggregate = Aggregate.MAX,
+    name = "total",
+    operator = QueryOperator.IS_NULL,
+    ignoreEmpty = false
+  ) val maxTotal: Int? = null
 )
 
 abstract class R2dbcJoinQueryContract {
@@ -242,6 +282,217 @@ abstract class R2dbcJoinQueryContract {
     assertThrows<IllegalArgumentException> {
       runBlocking { joinQuery.select(spec, BadRow::class).toList() }
     }
+  }
+
+  // --- aggregates ---
+
+  private val statsSpec =
+    JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
+
+  private fun stats(
+    filter: Any? = null,
+    query: Query = Query.empty().sort(Sort.by("id"))
+  ) = runBlocking { joinQuery.select(statsSpec, UserStatsRow::class, filter, query).toList() }
+
+  @Test
+  fun `selects all five aggregates per root row`() {
+    assertEquals(
+      listOf(
+        UserStatsRow(1, "alice", 2, 150, 75.0, 50, 100),
+        UserStatsRow(2, "bob", 1, 200, 200.0, 200, 200),
+        UserStatsRow(3, "carol", 0, null, null, null, null)
+      ),
+      stats()
+    )
+  }
+
+  @Test
+  fun `filters on an aggregate`() {
+    assertEquals(listOf("alice"), stats(UserStatsFilter(minOrders = 2)).map { it.name })
+    assertEquals(listOf("bob"), stats(UserStatsFilter(avgAbove = 100)).map { it.name })
+    assertEquals(listOf("bob", "carol"), stats(UserStatsFilter(orderCounts = listOf(0, 1))).map { it.name })
+    assertEquals(listOf("carol"), stats(UsersWithoutOrdersFilter()).map { it.name })
+    assertEquals(1L, runBlocking { joinQuery.count(statsSpec, UserStatsFilter(minOrders = 2)) })
+  }
+
+  @Test
+  fun `plain criteria on an aggregate alias scope the aggregation, not the root rows`() {
+    assertEquals(
+      listOf(
+        UserStatsRow(1, "alice", 1, 50, 50.0, 50, 50),
+        UserStatsRow(2, "bob", 1, 200, 200.0, 200, 200),
+        UserStatsRow(3, "carol", 0, null, null, null, null)
+      ),
+      stats(UserStatsFilter(status = "PAID"))
+    )
+    // scope applies to the aggregate filter as well: alice has only one PAID order
+    assertEquals(emptyList(), stats(UserStatsFilter(status = "PAID", minOrders = 2)))
+  }
+
+  @Test
+  fun `sorts and pages by an aggregate`() {
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          statsSpec,
+          UserStatsRow::class,
+          PageRequest.of(0, 2, Sort.by(Sort.Direction.DESC, "totalSum"))
+        )
+      }
+    assertEquals(listOf("bob", "alice"), page.content.map { it.name })
+    assertEquals(3L, page.total)
+  }
+
+  @Test
+  fun `aggregates combine with joins, exists and plain filters`() {
+    data class OrderWithUserStats(
+      @SelectColumn(table = "o", name = "id") val orderId: Long,
+      val name: String,
+      @SelectAggregate(table = "s", function = Aggregate.COUNT) val orderCount: Long
+    )
+
+    data class Filter(
+      @QueryField(table = "o") val status: String? = null,
+      @QueryField(table = "i") val sku: String? = null,
+      @QueryField(table = "s", aggregate = Aggregate.COUNT, operator = QueryOperator.GTE) val minOrders: Long? = null
+    )
+
+    val mixed = spec.join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
+    val rows =
+      runBlocking {
+        joinQuery
+          .select(mixed, OrderWithUserStats::class, Filter(status = "NEW", sku = "A", minOrders = 2), byOrder)
+          .toList()
+      }
+
+    assertEquals(listOf(OrderWithUserStats(10, "alice", 2)), rows)
+  }
+
+  @Test
+  fun `rejects invalid aggregate usage`() {
+    data class OnJoinedAlias(
+      val id: Long,
+      @SelectAggregate(table = "o", function = Aggregate.COUNT) val n: Long
+    )
+
+    data class SumWithoutColumn(
+      val id: Long,
+      @SelectAggregate(table = "s", function = Aggregate.SUM) val n: Long?
+    )
+
+    data class ColumnFromAggregateAlias(
+      val id: Long,
+      @SelectColumn(table = "s") val status: String
+    )
+
+    data class LikeOnAggregate(
+      @QueryField(table = "s", aggregate = Aggregate.MAX, name = "status", operator = QueryOperator.CONTAINS)
+      val status: String? = "P"
+    )
+
+    assertThrows<IllegalArgumentException> { runBlocking { joinQuery.select(spec, OnJoinedAlias::class).toList() } }
+    assertThrows<IllegalArgumentException> {
+      runBlocking {
+        joinQuery
+          .select(
+            statsSpec,
+            SumWithoutColumn::class
+          ).toList()
+      }
+    }
+    assertThrows<IllegalArgumentException> {
+      runBlocking { joinQuery.select(statsSpec, ColumnFromAggregateAlias::class).toList() }
+    }
+    assertThrows<UnsupportedOperationException> { stats(LikeOnAggregate()) }
+    assertThrows<IllegalArgumentException> {
+      JoinSpec
+        .from(JoinUser::class, "u")
+        .join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
+        .join(JoinItem::class, "i", "s.id" to "orderId")
+    }
+  }
+
+  // --- extra ON conditions ---
+
+  private val paid = Criteria.where("status").`is`("PAID")
+
+  @Test
+  fun `left join onCriteria keeps unmatched root rows, where criteria do not`() {
+    val sorted = Query.empty().sort(Sort.by("id"))
+    val onSpec =
+      JoinSpec
+        .from(
+          JoinUser::class,
+          "u"
+        ).join(JoinOrder::class, "o", "u.id" to "userId", mode = JoinMode.LEFT, onCriteria = paid)
+    val plainSpec =
+      JoinSpec
+        .from(
+          JoinUser::class,
+          "u"
+        ).join(JoinOrder::class, "o", "u.id" to "userId", mode = JoinMode.LEFT)
+
+    val viaOn = runBlocking { joinQuery.select(onSpec, UserMaybeOrderRow::class, query = sorted).toList() }
+    val viaWhere =
+      runBlocking {
+        joinQuery.select(plainSpec, UserMaybeOrderRow::class, query = sorted, required = mapOf("o" to paid)).toList()
+      }
+
+    assertEquals(
+      listOf(
+        UserMaybeOrderRow(1, "alice", "PAID"),
+        UserMaybeOrderRow(2, "bob", "PAID"),
+        UserMaybeOrderRow(3, "carol", null)
+      ),
+      viaOn
+    )
+    assertEquals(listOf("alice", "bob"), viaWhere.map { it.name })
+    assertEquals(3L, runBlocking { joinQuery.count(onSpec) })
+  }
+
+  @Test
+  fun `inner join onCriteria combines with filters`() {
+    val onSpec = JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "o", "u.id" to "userId", onCriteria = paid)
+    val rows =
+      runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(minTotal = 100), byOrder).toList() }
+    assertEquals(listOf(12L), rows.map { it.orderId })
+  }
+
+  @Test
+  fun `exists onCriteria narrows the subquery but does not activate it`() {
+    val onSpec =
+      JoinSpec
+        .from(JoinUser::class, "u")
+        .join(JoinOrder::class, "o", "u.id" to "userId")
+        .join(
+          JoinItem::class,
+          "i",
+          "o.id" to "orderId",
+          mode = JoinMode.EXISTS,
+          onCriteria = Criteria.where("id").greaterThanOrEquals(103)
+        )
+
+    val filtered =
+      runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(sku = "A"), byOrder).toList() }
+    val unfiltered = runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(), byOrder).toList() }
+
+    assertEquals(listOf(12L), filtered.map { it.orderId })
+    assertEquals(3, unfiltered.size)
+  }
+
+  @Test
+  fun `aggregate onCriteria scopes the aggregation`() {
+    val onSpec =
+      JoinSpec
+        .from(
+          JoinUser::class,
+          "u"
+        ).join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE, onCriteria = paid)
+    val rows =
+      runBlocking { joinQuery.select(onSpec, UserStatsRow::class, query = Query.empty().sort(Sort.by("id"))).toList() }
+
+    assertEquals(listOf(1L, 1L, 0L), rows.map { it.orderCount })
+    assertEquals(listOf(50L, 200L, null), rows.map { it.totalSum })
   }
 }
 

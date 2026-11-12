@@ -1,6 +1,6 @@
 # Database Tools
 
-A Kotlin/Spring library that provides reactive pagination, flexible query mapping, and database purging utilities for MongoDB and R2DBC (SQL) databases. Built on top of Spring Data and Kotlin coroutines, it removes boilerplate from common data-access patterns — paginated queries, filter-to-query conversion, sort-field allowlisting, and test-environment teardown — so you can focus on business logic instead of infrastructure plumbing.
+A Kotlin/Spring library that provides reactive pagination, flexible query mapping, and database purging utilities for MongoDB and R2DBC (SQL) databases. Built on top of Spring Data and Kotlin coroutines, it removes boilerplate from common data-access patterns — paginated queries, filter-to-query conversion (including multi-table joins and aggregates on R2DBC), sort-field allowlisting, after-commit actions, JSON column conversion, and test-environment teardown — so you can focus on business logic instead of infrastructure plumbing.
 
 ## Table of Contents
 
@@ -12,17 +12,23 @@ A Kotlin/Spring library that provides reactive pagination, flexible query mappin
 - [Query Mapper](#query-mapper)
   - [@QueryField](#queryfield)
   - [QueryOperator](#queryoperator)
-  - [MongoQueryMapper](#mongoquarymapper)
+  - [MongoQueryMapper](#mongoquerymapper)
   - [SqlQueryMapper](#sqlquerymapper)
   - [Query Mapper Extensions](#query-mapper-extensions)
   - [Join Queries (R2DBC)](#join-queries-r2dbc)
+    - [Aggregates](#aggregates)
 - [Page Request Mapping](#page-request-mapping)
   - [@Sortable](#sortable)
   - [@SortableDefaults](#sortabledefaults)
   - [PageRequestMapper](#pagerequestmapper)
+- [R2DBC Support](#r2dbc-support)
+  - [TransactionalManager](#transactionalmanager)
+  - [JSON Converters](#json-converters)
+- [Auto-configuration](#auto-configuration)
 - [Purger](#purger)
   - [MongoDbPurger](#mongodbpurger)
   - [R2dbcDbPurger](#r2dbcdbpurger)
+- [Development](#development)
 - [License](#license)
 
 ---
@@ -94,7 +100,7 @@ data class Pagination<T>(
 
 ### MongoDbPaginator
 
-`MongoDbPaginator` is a Spring `@Component` that fetches a page of results and the total count concurrently from MongoDB.
+`MongoDbPaginator` is auto-configured as a Spring bean (when a `ReactiveMongoTemplate` bean exists) and fetches a page of results and the total count concurrently from MongoDB.
 
 **Inject in your service:**
 
@@ -143,7 +149,7 @@ The items and count queries run in parallel via `coroutineScope` — the total i
 
 ### R2dbcPaginator
 
-`R2dbcPaginator` is a Spring `@Component` that does the same for R2DBC (reactive SQL databases such as MySQL, PostgreSQL).
+`R2dbcPaginator` is auto-configured (when an `R2dbcEntityTemplate` bean exists) and does the same for R2DBC (reactive SQL databases such as MySQL, PostgreSQL).
 
 **Inject in your service:**
 
@@ -205,7 +211,8 @@ Place `@QueryField` on properties of a filter data class to declare how each fie
     name        = "",               // DB field / column name. Defaults to the Kotlin property name.
     operator    = QueryOperator.EQ,
     ignoreEmpty = true,             // Skip null and blank String values (default: true).
-    table       = ""                // Joined table alias; see Join Queries. Empty = root table.
+    table       = "",               // Joined table alias; see Join Queries. Empty = root table.
+    aggregate   = Aggregate.NONE    // Compare COUNT/SUM/AVG/MIN/MAX of the column; see Aggregates.
 )
 ```
 
@@ -277,6 +284,18 @@ mongoTemplate.find(query, Product::class.java)
 
 Use `toCriteriaList(filter)` to get the raw `List<Criteria>` when you need to compose with your own criteria.
 
+**Merging into an existing query.** `toQuery(filter, base, required)` returns a copy of `base` (sort, paging and projection kept; `base` is not mutated) with `$and: [required, mapped…]` added:
+
+```kotlin
+val query = MongoQueryMapper.toQuery(
+    filter,
+    base     = Query().with(pageable),
+    required = Criteria.where("tenantId").`is`(tenantId)
+)
+```
+
+Top-level keys of `base` are implicitly ANDed with it. A `base` that already has a top-level `$and` cannot be extended this way (Spring throws). Fields with `@QueryField(table = …)` or `aggregate = …` are rejected — they only apply to SQL join queries.
+
 ---
 
 ### SqlQueryMapper
@@ -293,7 +312,7 @@ data class OrderFilter(
 val query = SqlQueryMapper.toQuery(
     OrderFilter(customerId = "cust-42", statuses = listOf("PAID", "SHIPPED"))
 )
-// WHERE customer_id = 'cust-42' AND statuses IN ('PAID', 'SHIPPED')
+// WHERE customer_id = ? AND (statuses IN (?, ?))   -- values bound: 'cust-42', 'PAID', 'SHIPPED'
 
 r2dbcEntityTemplate.select(Order::class.java).matching(query).all()
 ```
@@ -368,6 +387,23 @@ val spec = JoinSpec.from(User::class, "u")
 | `INNER` | `JOIN … ON …` | yes | one result row per joined row |
 | `LEFT` | `LEFT OUTER JOIN … ON …` | yes | missing matches give `NULL`s |
 | `EXISTS` | `u.id IN (SELECT i.order_id FROM … WHERE <criteria>)` | no | semi-join: never duplicates rows; skipped when no criteria target it |
+| `AGGREGATE` | correlated subqueries, see [Aggregates](#aggregates) | aggregates only | never joined as rows |
+
+**Extra ON conditions.** `onCriteria` adds value conditions on the joined table's own columns:
+
+```kotlin
+JoinSpec.from(User::class, "u")
+    .join(Order::class, "o", "u.id" to "userId", mode = JoinMode.LEFT, onCriteria = Criteria.where("status").`is`("PAID"))
+// LEFT OUTER JOIN orders o ON u.id = o.user_id AND (o.status = ?)
+```
+
+| Mode | Where `onCriteria` goes |
+|---|---|
+| `INNER` / `LEFT` | into `ON`. For `LEFT` this keeps users without a paid order (with `NULL` columns); the same criteria via a filter field or `required["o"]` land in `WHERE` and drop them. |
+| `EXISTS` | into the subquery; it does not activate the EXISTS filter on its own (filter fields / `required` still do) |
+| `AGGREGATE` | into every aggregate subquery of that alias, always |
+
+Column names are resolved against the joined entity; comparing against another table's column is not supported (use the `on` column pairs for that).
 
 **2. Tag filter fields** with the table alias:
 
@@ -406,6 +442,45 @@ joinQuery.select(spec, UserOrderRow::class, filter, required = mapOf("u" to Crit
 - Criteria per alias: `required[alias] AND (query criteria — root only) AND filter fields`; each part is parenthesised.
 - Sort properties are DTO property names (`orderId`) or `alias.column` (`o.total`); anything that isn't a plain identifier is rejected. Run client sorts through `PageRequestMapper` with `@Sortable` on the DTO to allowlist them.
 - Everything is bound as parameters. Bind markers are generated in SQL text order, as MySQL's positional `?` requires.
+
+#### Aggregates
+
+`COUNT`, `SUM`, `AVG`, `MIN` and `MAX` over a `JoinMode.AGGREGATE` table are computed **per root row** as correlated scalar subqueries, so results stay one row per root entity and `count` / paging / sorting work unchanged.
+
+```kotlin
+val spec = JoinSpec.from(User::class, "u")
+    .join(Order::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
+
+data class UserStatsRow(
+    val id: Long,
+    val name: String,
+    @SelectAggregate(table = "s", function = Aggregate.COUNT) val orderCount: Long,              // COUNT(*)
+    @SelectAggregate(table = "s", function = Aggregate.SUM, name = "total") val totalSum: Long?,
+    @SelectAggregate(table = "s", function = Aggregate.AVG, name = "total") val avgTotal: Double?
+)
+
+data class UserStatsFilter(
+    @QueryField(table = "s") val status: String? = null,                                         // scopes the aggregation
+    @QueryField(table = "s", aggregate = Aggregate.COUNT, operator = QueryOperator.GTE) val minOrders: Long? = null,
+    @QueryField(table = "s", aggregate = Aggregate.AVG, name = "total", operator = QueryOperator.GT) val avgAbove: Int? = null
+)
+
+joinQuery.toPagination(spec, UserStatsRow::class, PageRequest.of(0, 20, Sort.by(DESC, "totalSum")), filter)
+```
+
+```sql
+SELECT u.id AS id, u.name AS name,
+       (SELECT COUNT(*) FROM orders s WHERE (s.status = ?) AND s.user_id = u.id) AS order_count, ...
+FROM users u
+WHERE ((SELECT COUNT(*) FROM orders s WHERE (s.status = ?) AND s.user_id = u.id) >= ?)
+ORDER BY total_sum DESC
+```
+
+- **Plain criteria on an `AGGREGATE` alias** (filter fields or `required["s"]`) restrict the rows being aggregated, not the root rows. To filter root rows by related rows, add a separate `EXISTS` alias for the same table.
+- Aggregate filter operators: `EQ`, `NE`, `GT`, `GTE`, `LT`, `LTE`, `IN`, `NOT_IN`, `IS_NULL`/`NOT_EXISTS`, `IS_NOT_NULL`/`EXISTS`. `LIKE`-style operators throw `UnsupportedOperationException`.
+- Over no rows `COUNT` is `0`; `SUM`, `AVG`, `MIN`, `MAX` are `NULL`, so declare those DTO properties nullable.
+- Sorting by an aggregate DTO property orders by its select alias, so the subquery is not repeated.
+- Each aggregate used in both the select list and a filter runs as its own subquery; index the correlation column (e.g. `orders.user_id`). For report-style grouping across many dimensions, prefer a view or a hand-written query.
 
 ## Page Request Mapping
 
@@ -501,6 +576,110 @@ GET /users?size=1000
 
 ---
 
+## R2DBC Support
+
+### TransactionalManager
+
+`TransactionalManager` runs work **after the current reactive transaction commits** — sending events, emails or cache invalidations only once the data is really stored. It is auto-configured; inject it where needed.
+
+```kotlin
+@Service
+class OrderService(
+    private val orders: OrderRepository,
+    private val transactional: TransactionalManager,
+    private val events: EventPublisher
+) {
+    @Transactional
+    suspend fun place(order: Order): Order {
+        val saved = orders.save(order)
+        transactional.afterCommit("order-placed-${saved.id}") {
+            events.publish(OrderPlaced(saved.id))   // runs only if the transaction commits
+        }
+        return saved
+    }
+}
+```
+
+Programmatic transactions work the same way (`transactionalOperator.executeAndAwait { … }`).
+
+**`afterCommit(name, timeout = 30s) { … }`**
+
+- Must be called inside an active reactive transaction with synchronization; otherwise it throws `IllegalStateException`.
+- Runs only if the transaction **commits** — never after a rollback or a failed transaction.
+- **Fire-and-forget:** the action runs in the background on `Dispatchers.Default`; the caller (and the HTTP response) does not wait for it.
+- Runs **outside** the original transaction. It sees the committed data; its own writes are not part of that transaction (wrap them in a new transaction if they must be atomic).
+- Failures and timeouts are **logged, not rethrown**, and never affect the already committed transaction. An action exceeding `timeout` is cancelled. If the work must not be lost, persist it (e.g. an outbox table) instead of relying on the action alone.
+- `name` is used in log messages only.
+
+**`inTransaction(name) { … }`** runs the block if a transaction is active and throws `IllegalStateException` otherwise — a guard for code that must never run outside a transaction.
+
+**Shutdown.** The bean is a `SmartLifecycle`. On application stop it stops accepting new actions (late ones are dropped with a `WARN`), waits up to `shutdownTimeout` (10s) for running actions, then cancels the rest. This happens after the web server has stopped taking requests and before the connection pool is closed.
+
+To change the defaults, declare your own bean (the auto-configured one backs off):
+
+```kotlin
+@Bean
+fun transactionalManager() = TransactionalManager(defaultTimeout = 1.minutes, shutdownTimeout = 30.seconds)
+```
+
+---
+
+### JSON Converters
+
+Store `List<String>` and `Map<String, Any?>` entity properties as JSON text (e.g. MySQL `JSON` or `TEXT` columns) without writing converters:
+
+```kotlin
+@Table("products")
+data class Product(
+    @Id val id: Long? = null,
+    val tags: List<String> = emptyList(),          // column: ["new","sale"]
+    val attributes: Map<String, Any?> = emptyMap() // column: {"color":"red","size":42}
+)
+```
+
+| Converter | Direction | Behaviour |
+|---|---|---|
+| `ListToStringConverter` | `List<String>` → `String` | JSON array |
+| `StringToListConverter` | `String` → `List<String>` | blank → empty list; `null` elements dropped |
+| `MapToJsonConverter` | `Map<String, Any?>` → `String` | JSON object |
+| `JsonToMapConverter` | `String` → `Map<String, Any?>` | blank → empty map |
+
+- Serialization uses the application's Jackson 3 `ObjectMapper` (`tools.jackson.databind.ObjectMapper`), so its configuration applies.
+- **Invalid JSON is read as an empty list / map** and logged at `ERROR` — the row still loads. Saving that entity back would overwrite the column with `[]` / `{}`.
+- The conversions apply to every `List<String>` / `Map<String, Any?>` property of every R2DBC entity.
+
+**Registration.** `R2dbcConvertersAutoConfiguration` provides an `R2dbcCustomConversions` bean (for the dialect of your `ConnectionFactory`) containing these converters when both a `ConnectionFactory` and a Jackson `ObjectMapper` bean exist. Without Jackson, Spring Boot's default conversions are used unchanged.
+
+If you declare **your own** `R2dbcCustomConversions`, the auto-configuration backs off and the JSON converters are **not** registered — add them yourself:
+
+```kotlin
+@Bean
+fun r2dbcCustomConversions(objectMapper: ObjectMapper, connectionFactory: ConnectionFactory) =
+    R2dbcCustomConversions.of(
+        DialectResolver.getDialect(connectionFactory),
+        R2dbcConverters(objectMapper).toList() + listOf(MyOtherConverter())
+    )
+```
+
+---
+
+## Auto-configuration
+
+All beans are registered by Spring Boot auto-configuration and back off when you declare a bean of the same type.
+
+| Bean | Registered when |
+|---|---|
+| `MongoDbPaginator` | a `ReactiveMongoTemplate` bean exists |
+| `MongoDbPurger` | a `ReactiveMongoOperations` bean exists |
+| `R2dbcPaginator`, `R2dbcJoinQuery` | an `R2dbcEntityTemplate` bean exists |
+| `R2dbcDbPurger` | a `DatabaseClient` bean exists |
+| `TransactionalManager` | Spring's reactive transaction support is on the classpath |
+| `R2dbcCustomConversions` (JSON converters) | a `ConnectionFactory` and a Jackson 3 `ObjectMapper` bean exist |
+
+`PageRequestMapper`, `MongoQueryMapper` and `SqlQueryMapper` are plain singletons (`object`s) and need no bean.
+
+---
+
 ## Purger
 
 The purger components are intended for **test environments only**. They wipe all data from the database and are useful for resetting state between integration tests.
@@ -509,10 +688,9 @@ The purger components are intended for **test environments only**. They wipe all
 
 ### MongoDbPurger
 
-`MongoDbPurger` is a Spring `@Component` that drops every collection in the connected MongoDB database.
+`MongoDbPurger` drops every collection in the connected MongoDB database. It is auto-configured when a `ReactiveMongoOperations` bean exists.
 
 ```kotlin
-@Component
 class MongoDbPurger(private val reactiveMongoOperations: ReactiveMongoOperations)
 ```
 
@@ -544,10 +722,9 @@ class UserRepositoryTest(
 
 ### R2dbcDbPurger
 
-`R2dbcDbPurger` is a Spring `@Component` that truncates all user-defined tables in the connected MySQL database.
+`R2dbcDbPurger` truncates all user-defined tables in the connected MySQL database. It is auto-configured when a `DatabaseClient` bean exists.
 
 ```kotlin
-@Component
 class R2dbcDbPurger(private val databaseClient: DatabaseClient)
 ```
 
@@ -585,6 +762,18 @@ class OrderRepositoryTest(
 - If a `TRUNCATE` fails, the exception is logged and re-thrown.
 - `FOREIGN_KEY_CHECKS = 1` is always restored in `finally`, even when an exception occurs, to avoid leaving the session in a broken state.
 - `flyway_schema_history` is excluded from truncation so Flyway migration state is never wiped.
+
+---
+
+## Development
+
+```bash
+./gradlew check            # tests, formatting (Spotless/ktlint) and coverage verification
+./gradlew spotlessApply    # fix formatting
+./gradlew installGitHook   # pre-commit hook that enforces formatting
+```
+
+The R2DBC join-query tests run against H2 and against MySQL 8.4 via [Testcontainers](https://testcontainers.com). The MySQL tests need a running Docker daemon and are **skipped** when Docker is unavailable.
 
 ---
 

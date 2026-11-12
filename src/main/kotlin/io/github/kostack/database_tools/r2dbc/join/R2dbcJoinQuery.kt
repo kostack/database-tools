@@ -1,7 +1,11 @@
 package io.github.kostack.database_tools.r2dbc.join
 
 import io.github.kostack.database_tools.paginator.Pagination
+import io.github.kostack.database_tools.query_mapper.Aggregate
+import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
+import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.SqlQueryMapper
+import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -9,12 +13,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactor.awaitSingle
+import org.springframework.data.core.TypeInformation
 import org.springframework.data.domain.Pageable
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.r2dbc.dialect.R2dbcDialect
-import org.springframework.data.r2dbc.query.QueryMapper
 import org.springframework.data.relational.core.dialect.RenderContextFactory
 import org.springframework.data.relational.core.mapping.RelationalPersistentEntity
+import org.springframework.data.relational.core.query.Criteria
 import org.springframework.data.relational.core.query.CriteriaDefinition
 import org.springframework.data.relational.core.query.Query
 import org.springframework.data.relational.core.sql.Column
@@ -25,8 +30,10 @@ import org.springframework.data.relational.core.sql.Expressions
 import org.springframework.data.relational.core.sql.Functions
 import org.springframework.data.relational.core.sql.Join.JoinType
 import org.springframework.data.relational.core.sql.OrderByField
+import org.springframework.data.relational.core.sql.SQL
 import org.springframework.data.relational.core.sql.Select
 import org.springframework.data.relational.core.sql.SelectBuilder
+import org.springframework.data.relational.core.sql.SimpleFunction
 import org.springframework.data.relational.core.sql.SqlIdentifier
 import org.springframework.data.relational.core.sql.Table
 import org.springframework.data.relational.core.sql.TupleExpression
@@ -35,7 +42,9 @@ import org.springframework.r2dbc.core.PreparedOperation
 import org.springframework.r2dbc.core.binding.BindMarkers
 import org.springframework.r2dbc.core.binding.BindTarget
 import org.springframework.r2dbc.core.binding.Bindings
+import org.springframework.r2dbc.core.binding.MutableBindings
 import kotlin.reflect.KClass
+import org.springframework.data.r2dbc.query.QueryMapper as R2dbcQueryMapper
 
 /**
  * Runs `@QueryField` filters against a root table plus joined tables (see [JoinSpec])
@@ -49,7 +58,7 @@ class R2dbcJoinQuery(
   private val template: R2dbcEntityTemplate
 ) {
   private val dialect by lazy { template.dataAccessStrategy.dialect as R2dbcDialect }
-  private val queryMapper by lazy { QueryMapper(dialect, template.converter) }
+  private val queryMapper by lazy { R2dbcQueryMapper(dialect, template.converter) }
   private val renderer by lazy { SqlRenderer.create(RenderContextFactory(dialect).createRenderContext()) }
 
   /**
@@ -123,34 +132,54 @@ class R2dbcJoinQuery(
     private val tables: Map<String, Table> =
       entities.mapValues { (alias, entity) -> Table.create(entity.qualifiedTableName).`as`(alias) }
 
-    // Bind markers must be created in the same order they appear in the SQL text:
-    // MySQL uses positional `?` markers.
+    // Bind markers must be created in the same order they appear in the SQL text
+    // (MySQL uses positional `?` markers): select list, then WHERE. JOIN ON, ORDER BY and LIMIT bind nothing.
     private val markers: BindMarkers = dialect.bindMarkersFactory.create()
     private var bindings = Bindings()
+    private val identifiers = dialect.identifierProcessing
 
-    /** DTO property name -> source column (unaliased); empty for count. */
-    private val selected: Map<String, Pair<Column, SqlIdentifier>> = resultType?.let(::selectedColumns).orEmpty()
+    /** Plain criteria per alias: `required AND (query criteria, root only) AND filter`. */
+    private lateinit var criteriaByAlias: Map<String, Criteria>
+
+    /** DTO property name -> expression to sort by. */
+    private val sortable = HashMap<String, Expression>()
 
     fun build(
       filter: Any?,
       query: Query,
       required: Map<String, CriteriaDefinition>
     ): PreparedOperation<Select> {
-      val where = whereConditions(filter, query, required)
+      val fields = filter?.let { SqlQueryMapper.activeFields(it) }.orEmpty()
+      val aliasOf = { field: MappedField -> field.field.table.ifEmpty { spec.rootAlias } }
+      val (aggregateFields, plainFields) = fields.partition { it.field.aggregate != Aggregate.NONE }
+
+      (fields.map(aliasOf) + required.keys).forEach(::requireAlias)
+
+      val plain = plainFields.groupBy(aliasOf, SqlQueryMapper::toCriteria)
+      criteriaByAlias =
+        spec
+          .aliases()
+          .mapNotNull { alias ->
+            val root = alias == spec.rootAlias
+            SqlQueryMapper
+              .combine(
+                listOfNotNull(required[alias], query.criteria.orElse(null)?.takeIf { root }) + plain[alias].orEmpty()
+              )?.let { alias to it }
+          }.toMap()
 
       val selectList: List<Expression> =
-        if (resultType == null) {
-          listOf(Functions.count(Expressions.asterisk()))
-        } else {
-          selected.values.map { (column, alias) -> column.`as`(alias) }
-        }
+        if (resultType == null) listOf(Functions.count(Expressions.asterisk())) else selectList(resultType)
+
+      // Text order: select list, JOIN ... ON, WHERE.
+      val joins = spec.joins.filter { it.mode.joined }.map { it to onCondition(it) }
+      val where = whereCondition(aggregateFields.map { aliasOf(it) to it })
 
       var joined: SelectBuilder.SelectJoin =
         Select.builder().select(selectList).from(tables.getValue(spec.rootAlias))
 
-      spec.joins.filter { it.mode != JoinMode.EXISTS }.forEach { join ->
+      joins.forEach { (join, on) ->
         val type = if (join.mode == JoinMode.LEFT) JoinType.LEFT_OUTER_JOIN else JoinType.JOIN
-        joined = joined.join(tables.getValue(join.alias), type).on(onCondition(join))
+        joined = joined.join(tables.getValue(join.alias), type).on(on)
       }
 
       val paged: SelectBuilder.SelectWhere =
@@ -172,37 +201,20 @@ class R2dbcJoinQuery(
       return JoinOperation(select, renderer.render(select), bindings)
     }
 
-    private fun whereConditions(
-      filter: Any?,
-      query: Query,
-      required: Map<String, CriteriaDefinition>
-    ): Condition? {
-      val aliases = spec.aliases()
-
-      val mapped =
-        filter
-          ?.let { SqlQueryMapper.toTableCriteriaList(it) }
-          .orEmpty()
-          .groupBy({ (table, _) -> table.ifEmpty { spec.rootAlias } }, { it.second })
-
-      (mapped.keys + required.keys).forEach { alias ->
-        require(alias in aliases) { "Unknown table alias '$alias'; declared: $aliases" }
-      }
-
-      // Mapping order == condition order == SQL text order (see markers).
+    private fun whereCondition(aggregateFields: List<Pair<String, MappedField>>): Condition? {
       val conditions =
-        aliases.mapNotNull { alias ->
-          val root = alias == spec.rootAlias
-          val criteria =
-            SqlQueryMapper.combine(
-              listOfNotNull(required[alias], query.criteria.orElse(null)?.takeIf { root }) +
-                mapped[alias].orEmpty()
-            ) ?: return@mapNotNull null
+        spec.aliases().mapNotNull { alias ->
+          val criteria = criteriaByAlias[alias] ?: return@mapNotNull null
+          when (spec.modeOf(alias)) {
+            // AGGREGATE criteria scope the aggregate subqueries instead
+            JoinMode.AGGREGATE -> null
 
-          val condition = map(alias, criteria)
+            // onCriteria joins the subquery only once the EXISTS filter is active
+            JoinMode.EXISTS -> semiJoin(alias, map(alias, withOnCriteria(alias, criteria)!!))
 
-          if (spec.modeOf(alias) == JoinMode.EXISTS) semiJoin(alias, condition) else condition
-        }
+            else -> map(alias, criteria)
+          }
+        } + aggregateFields.map { (alias, field) -> aggregateCondition(alias, field) }
 
       return when (conditions.size) {
         0 -> null
@@ -239,45 +251,160 @@ class R2dbcJoinQuery(
       return Conditions.`in`(left.singleOrNull() ?: TupleExpression.create(left), subselect)
     }
 
-    private fun onCondition(join: JoinSpec.Join): Condition =
-      join.on
-        .map { (left, right) -> Conditions.isEqual(reference(left), column(join.alias, right)) as Condition }
-        .reduce { acc, next -> acc.and(next) }
+    /**
+     * `(SELECT FN(arg) FROM t a WHERE <correlation> AND (<criteria of a>))`.
+     * Rendered to text because Spring's subquery expression type is not public; values stay bound.
+     */
+    private fun aggregateSql(
+      alias: String,
+      function: Aggregate,
+      name: String,
+      owner: String
+    ): String {
+      requireAlias(alias)
+      require(spec.modeOf(alias) == JoinMode.AGGREGATE) {
+        "$owner aggregates alias '$alias' which is ${spec.modeOf(
+          alias
+        ) ?: "the root"}; declare it with JoinMode.AGGREGATE"
+      }
+      require(name.isNotEmpty() || function == Aggregate.COUNT) { "$owner: $function needs a column name" }
+
+      val join = spec.joins.single { it.alias == alias }
+      val argument = if (name.isEmpty()) Expressions.asterisk() else column(alias, name)
+      val call =
+        when (function) {
+          Aggregate.COUNT -> Functions.count(argument)
+          Aggregate.NONE -> error("not an aggregate")
+          else -> SimpleFunction.create(function.name, listOf(argument))
+        }
+
+      // Correlation to the outer row is appended as text: Spring's SELECT validator rejects
+      // columns of tables that are not in the subquery's own FROM.
+      val correlation =
+        join.on.joinToString(" AND ") { (left, right) -> "${sql(column(alias, right))} = ${sql(reference(left))}" }
+      val scope = withOnCriteria(alias, criteriaByAlias[alias])?.let { Conditions.nest(map(alias, it)) }
+
+      val from = Select.builder().select(call).from(tables.getValue(alias))
+      val subselect = renderer.render(if (scope == null) from.build() else from.where(scope).build())
+      return "($subselect ${if (scope == null) "WHERE" else "AND"} $correlation)"
+    }
+
+    private fun aggregateCondition(
+      alias: String,
+      mapped: MappedField
+    ): Condition {
+      val field = mapped.field
+      val owner = "QueryField ${mapped.propertyName}"
+      val left = Expressions.just(aggregateSql(alias, field.aggregate, field.name, owner))
+
+      return when (field.operator) {
+        QueryOperator.EQ -> Conditions.isEqual(left, bind(mapped))
+        QueryOperator.NE -> Conditions.isNotEqual(left, bind(mapped))
+        QueryOperator.GT -> Conditions.isGreater(left, bind(mapped))
+        QueryOperator.GTE -> Conditions.isGreaterOrEqualTo(left, bind(mapped))
+        QueryOperator.LT -> Conditions.isLess(left, bind(mapped))
+        QueryOperator.LTE -> Conditions.isLessOrEqualTo(left, bind(mapped))
+        QueryOperator.IN -> Conditions.`in`(left, bindAll(mapped))
+        QueryOperator.NOT_IN -> Conditions.notIn(left, bindAll(mapped))
+        QueryOperator.IS_NULL, QueryOperator.NOT_EXISTS -> Conditions.isNull(left)
+        QueryOperator.IS_NOT_NULL, QueryOperator.EXISTS -> Conditions.isNull(left).not()
+        else -> throw UnsupportedOperationException("$owner: ${field.operator} is not supported on aggregates")
+      }
+    }
+
+    private fun bind(mapped: MappedField): Expression {
+      val value =
+        requireNotNull(mapped.value) { "QueryField ${mapped.propertyName}: ${mapped.field.operator} needs a value" }
+      return bindValue(value)
+    }
+
+    private fun bindAll(mapped: MappedField): List<Expression> {
+      val values =
+        mapped.value as? Collection<*> ?: throw IllegalArgumentException(
+          "QueryField ${mapped.propertyName}: ${mapped.field.operator} requires a Collection value"
+        )
+      return values.filterNotNull().map(::bindValue)
+    }
+
+    private fun bindValue(value: Any): Expression {
+      val converted = template.converter.writeValue(value, TypeInformation.of(value.javaClass)) ?: value
+      val bound = MutableBindings(markers)
+      val marker = bound.bind(converted)
+      bindings = Bindings.merge(bindings, bound)
+      return SQL.bindMarker(marker.placeholder)
+    }
+
+    private fun onCondition(join: JoinSpec.Join): Condition {
+      val columns =
+        join.on
+          .map { (left, right) -> Conditions.isEqual(reference(left), column(join.alias, right)) as Condition }
+          .reduce { acc, next -> acc.and(next) }
+      val extra = SqlQueryMapper.combine(listOfNotNull(join.onCriteria)) ?: return columns
+      return columns.and(Conditions.nest(map(join.alias, extra)))
+    }
+
+    /** `onCriteria AND criteria` for a subquery alias; `null` when both are absent. */
+    private fun withOnCriteria(
+      alias: String,
+      criteria: CriteriaDefinition?
+    ): Criteria? = SqlQueryMapper.combine(listOfNotNull(spec.onCriteriaOf(alias), criteria))
 
     private fun orderBy(query: Query): List<OrderByField> =
       query.sort
-        .map { order ->
-          val column = selected[order.property]?.first ?: reference(order.property)
-          OrderByField.from(column, order.direction)
-        }.toList()
+        .map { order -> OrderByField.from(sortable[order.property] ?: reference(order.property), order.direction) }
+        .toList()
 
-    private fun selectedColumns(type: KClass<*>): Map<String, Pair<Column, SqlIdentifier>> {
+    private fun selectList(type: KClass<*>): List<Expression> {
       val dto = entityOf(type)
-      val result = LinkedHashMap<String, Pair<Column, SqlIdentifier>>()
+      val result = ArrayList<Expression>()
 
       dto.forEach { property ->
-        val annotation = property.findAnnotation(SelectColumn::class.java)
-        val alias = annotation?.table?.ifEmpty { null } ?: spec.rootAlias
-        require(alias in entities) {
-          "${type.simpleName}.${property.name} selects from unknown alias '$alias'; declared: ${spec.aliases()}"
-        }
-        require(spec.modeOf(alias) != JoinMode.EXISTS) {
-          "${type.simpleName}.${property.name} selects from EXISTS alias '$alias'; use INNER or LEFT"
+        val owner = "${type.simpleName}.${property.name}"
+        val selectColumn = property.findAnnotation(SelectColumn::class.java)
+        val selectAggregate = property.findAnnotation(SelectAggregate::class.java)
+        require(
+          selectColumn == null || selectAggregate == null
+        ) { "$owner has both @SelectColumn and @SelectAggregate" }
+
+        if (selectAggregate != null) {
+          val label = property.columnName.toSql(identifiers)
+          result +=
+            Expressions.just(
+              "${aggregateSql(selectAggregate.table, selectAggregate.function, selectAggregate.name, owner)} AS $label"
+            )
+          sortable[property.name] = Expressions.just(label)
+          return@forEach
         }
 
-        val name = annotation?.name?.ifEmpty { null }
+        val alias = selectColumn?.table?.ifEmpty { null } ?: spec.rootAlias
+        requireAlias(alias)
+        require(spec.modeOf(alias)?.joined != false) {
+          "$owner selects from ${spec.modeOf(alias)} alias '$alias'; use INNER or LEFT"
+        }
+
+        val name = selectColumn?.name?.ifEmpty { null }
         val column =
-          if (name == null) {
+          if (name ==
+            null
+          ) {
             column(alias, property.name, fallback = property.columnName)
           } else {
             column(alias, name)
           }
 
-        result[property.name] = column to property.columnName
+        result += column.`as`(property.columnName)
+        sortable[property.name] = column
       }
 
       return result
     }
+
+    private fun requireAlias(alias: String) =
+      require(alias in entities) { "Unknown table alias '$alias'; declared: ${spec.aliases()}" }
+
+    /** Renders a column reference the same way the SQL renderer does. */
+    private fun sql(column: Column): String =
+      "${column.table!!.referenceName.toSql(identifiers)}.${column.name.toSql(identifiers)}"
 
     /** `alias.name` or bare `name` (root table). */
     private fun reference(qualified: String): Column {

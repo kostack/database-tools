@@ -1,5 +1,8 @@
 package io.github.kostack.database_tools.r2dbc.join
 
+import io.github.kostack.database_tools.query_mapper.Aggregate
+import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
+import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import io.r2dbc.spi.ConnectionFactories
 import org.junit.jupiter.api.Test
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
@@ -107,5 +110,85 @@ class R2dbcJoinQuerySqlTest {
       "SELECT COUNT(*) FROM `join_user` u JOIN `join_order` o ON u.`id` = o.`user_id` WHERE o.`status` = ?",
       operation.toQuery()
     )
+  }
+
+  @Test
+  fun `aggregate binds follow text order across select list and where`() {
+    data class Row(
+      val id: Long,
+      @SelectAggregate(table = "s", function = Aggregate.COUNT) val orderCount: Long,
+      @SelectAggregate(table = "s", function = Aggregate.AVG, name = "total") val avgTotal: Double?
+    )
+
+    val statsSpec =
+      JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
+
+    val operation =
+      joinQuery.prepare(
+        statsSpec,
+        UserStatsFilter(status = "PAID", minOrders = 2),
+        Query.empty().sort(
+          org.springframework.data.domain.Sort
+            .by("avgTotal")
+        ),
+        mapOf("u" to Criteria.where("id").greaterThan(0)),
+        Row::class
+      )
+
+    val count = "SELECT COUNT(*) FROM `join_order` s WHERE (s.`status` = ?) AND s.`user_id` = u.`id`"
+    assertEquals(
+      "SELECT u.`id` AS `id`, " +
+        "($count) AS `order_count`, " +
+        "(SELECT AVG(s.`total`) FROM `join_order` s WHERE (s.`status` = ?) AND s.`user_id` = u.`id`) AS `avg_total` " +
+        "FROM `join_user` u " +
+        "WHERE (u.`id` > ?) AND (($count) >= ?) " +
+        "ORDER BY `avg_total` ASC",
+      operation.toQuery()
+    )
+
+    val target = RecordingTarget()
+    operation.bindTo(target)
+    assertEquals(listOf<Any?>("PAID", "PAID", 0L, "PAID", 2L), target.values.values.toList())
+  }
+
+  @Test
+  fun `on criteria binds sit between select list and where`() {
+    data class Row(
+      val id: Long,
+      @SelectColumn(table = "o") val status: String?,
+      @SelectAggregate(table = "s", function = Aggregate.COUNT) val orderCount: Long
+    )
+
+    val onSpec =
+      JoinSpec
+        .from(JoinUser::class, "u")
+        .join(
+          JoinOrder::class,
+          "o",
+          "u.id" to "userId",
+          mode = JoinMode.LEFT,
+          onCriteria = Criteria.where("total").greaterThan(60)
+        ).join(
+          JoinOrder::class,
+          "s",
+          "u.id" to "userId",
+          mode = JoinMode.AGGREGATE,
+          onCriteria = Criteria.where("status").`is`("PAID")
+        )
+
+    val operation =
+      joinQuery.prepare(onSpec, null, Query.empty(), mapOf("u" to Criteria.where("id").greaterThan(0)), Row::class)
+
+    assertEquals(
+      "SELECT u.`id` AS `id`, o.`status` AS `status`, " +
+        "(SELECT COUNT(*) FROM `join_order` s WHERE (s.`status` = ?) AND s.`user_id` = u.`id`) AS `order_count` " +
+        "FROM `join_user` u LEFT OUTER JOIN `join_order` o ON u.`id` = o.`user_id` AND (o.`total` > ?) " +
+        "WHERE u.`id` > ?",
+      operation.toQuery()
+    )
+
+    val target = RecordingTarget()
+    operation.bindTo(target)
+    assertEquals(listOf<Any?>("PAID", 60, 0L), target.values.values.toList())
   }
 }
