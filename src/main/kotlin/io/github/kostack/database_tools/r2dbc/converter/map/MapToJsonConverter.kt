@@ -7,6 +7,6 @@ import tools.jackson.databind.ObjectMapper
 @WritingConverter
 class MapToJsonConverter(
   private val objectMapper: ObjectMapper
-) : Converter<Map<String, Any>, String> {
-  override fun convert(source: Map<String, Any>): String = objectMapper.writeValueAsString(source)
+) : Converter<Map<String, Any?>, String> {
+  override fun convert(source: Map<String, Any?>): String = objectMapper.writeValueAsString(source)
 }
