@@ -1,6 +1,5 @@
 package io.github.kostack.database_tools.paginator
 
-import io.github.kostack.database_tools.query_mapper.PageRequestMapper
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.reactor.awaitSingle
@@ -12,21 +11,13 @@ import kotlin.reflect.KClass
 class MongoDbPaginator(
   private val reactiveMongoTemplate: ReactiveMongoTemplate
 ) {
-  /**
-   * Selects one page of [targetClass] plus the total count.
-   *
-   * @param sortableSource class carrying `@Sortable` / `@SortableDefaults` (typically the filter class) to apply
-   *   via [PageRequestMapper]: allowlist, default sort, page-size cap. `null` (default) leaves [pageable] as is.
-   */
   suspend fun <T : Any> toPagination(
     query: Query,
     pageable: Pageable,
-    targetClass: KClass<T>,
-    sortableSource: KClass<*>? = null
+    targetClass: KClass<T>
   ): Pagination<T> =
     coroutineScope {
-      val page = sortableSource?.let { PageRequestMapper.toPageRequest(pageable, it) } ?: pageable
-      val itemsQuery = Query.of(query).with(page)
+      val itemsQuery = Query.of(query).with(pageable)
       val countQuery = Query.of(query)
 
       val itemsDeferred =
@@ -46,8 +37,8 @@ class MongoDbPaginator(
 
       return@coroutineScope Pagination(
         content = itemsDeferred.await(),
-        limit = page.pageSize,
-        offset = page.offset,
+        limit = pageable.pageSize,
+        offset = pageable.offset,
         total = totalDeferred.await()
       )
     }

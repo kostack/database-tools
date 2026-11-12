@@ -2,7 +2,6 @@ package io.github.kostack.database_tools.r2dbc.join
 
 import io.github.kostack.database_tools.paginator.Pagination
 import io.github.kostack.database_tools.query_mapper.Aggregate
-import io.github.kostack.database_tools.query_mapper.PageRequestMapper
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.SqlQueryMapper
@@ -98,13 +97,9 @@ class R2dbcJoinQuery(
       .awaitSingle()
 
   /**
-   * Selects one page plus the total count.
+   * Selects one page plus the total count. `ignoreCase()` orders in [pageable] are supported.
    *
-   * @param sortableSource class carrying `@Sortable` / `@SortableDefaults` whose rules [pageable] goes through
-   *   ([PageRequestMapper]): unknown sort fields are rejected, API names are mapped to their `field`
-   *   (a DTO property or `alias.column`), the default sort applies and the page size is capped.
-   *   Defaults to the [filter]'s class when it is annotated; pass `null` to opt out, in which case any
-   *   DTO property or `alias.column` may be sorted on.
+   * To allowlist sort fields, map the pageable first: `pageable.toPageRequest(Filter::class)`.
    */
   suspend fun <T : Any> toPagination(
     spec: JoinSpec,
@@ -112,20 +107,18 @@ class R2dbcJoinQuery(
     pageable: Pageable,
     filter: Any? = null,
     query: Query = Query.empty(),
-    required: Map<String, CriteriaDefinition> = emptyMap(),
-    sortableSource: KClass<*>? = filter?.let { it::class }?.takeIf(PageRequestMapper::isSortable)
+    required: Map<String, CriteriaDefinition> = emptyMap()
   ): Pagination<T> =
     coroutineScope {
-      val page = sortableSource?.let { PageRequestMapper.toPageRequest(pageable, it) } ?: pageable
       // Paging goes into the query; the sort is passed separately because Spring's Query rejects ignoreCase orders.
-      val paged = query.with(PageRequest.of(page.pageNumber, page.pageSize))
-      val items = async { select(spec, resultType, filter, paged, required, page.sort).toList() }
+      val paged = query.with(PageRequest.of(pageable.pageNumber, pageable.pageSize))
+      val items = async { select(spec, resultType, filter, paged, required, pageable.sort).toList() }
       val total = async { count(spec, filter, query, required) }
 
       Pagination(
         content = items.await(),
-        limit = page.pageSize,
-        offset = page.offset,
+        limit = pageable.pageSize,
+        offset = pageable.offset,
         total = total.await()
       )
     }

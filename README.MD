@@ -145,7 +145,7 @@ GET /users?page=0&size=10
 
 The items and count queries run in parallel via `coroutineScope` — the total is never blocked by the item fetch.
 
-**Sorting.** Pass the filter class that carries `@Sortable` / `@SortableDefaults` as `sortableSource` to validate and map the `Pageable` (allowlist, default sort, page-size cap) — see [Sort rules in paginators](#sort-rules-in-paginators). Without it the `Pageable` is used as is.
+**Sorting.** The `Pageable` is used as is. To allowlist sort fields, map it first with the filter class's `@Sortable` / `@SortableDefaults`: `pageable.toPageRequest(UserFilter::class)` — see [PageRequestMapper](#pagerequestmapper).
 
 `ignoreCase()` orders (`sort=name,asc,ignorecase`) are **not supported** on MongoDB: Spring Data MongoDB rejects them with `IllegalArgumentException`. Use a case-insensitive collation on the collection or query instead.
 
@@ -200,7 +200,7 @@ GET /orders?status=OPEN&page=1&size=5
 
 The count query uses only the filter criteria (no `LIMIT`/`OFFSET`), ensuring an accurate total regardless of the requested page.
 
-**Sorting.** As with `MongoDbPaginator`, pass the annotated filter class as `sortableSource` ([details](#sort-rules-in-paginators)); without it the `Pageable` is used as is.
+**Sorting.** As with `MongoDbPaginator`, map the `Pageable` with `pageable.toPageRequest(Filter::class)` to allowlist sort fields ([details](#pagerequestmapper)).
 
 **Case-insensitive sorting.** `ignoreCase()` orders (e.g. `sort=name,asc,ignorecase` or via `PageRequestMapper`) are sorted by `LOWER(column)`. Spring's `Query` rejects such orders, so these requests run through [`R2dbcJoinQuery`](#join-queries-r2dbc) with a single-table spec — same criteria mapping and entity conversion. In that case a column projection (`Query.columns(...)`) is not supported and `@Embedded` properties on the entity are rejected. Requests without `ignoreCase` use `R2dbcEntityTemplate` exactly as before.
 
@@ -452,7 +452,7 @@ joinQuery.select(spec, UserOrderRow::class, filter, required = mapOf("u" to Crit
 - `ignoreCase()` orders sort by `LOWER(column)` (ignored for aggregate properties). Spring's `Query.sort` rejects them, so pass such orders via the `sort` parameter of `select`, or through the `Pageable` of `toPagination`.
 - Everything is bound as parameters. Bind markers are generated in SQL text order, as MySQL's positional `?` requires.
 
-**Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the filter class; `toPagination` picks them up from the `filter` you pass. `field` may be a DTO property or `alias.column`:
+**Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the filter class and map the `Pageable` with it. `field` may be a DTO property or `alias.column`:
 
 ```kotlin
 @SortableDefaults(defaultSortField = "orderId", maxPageSize = 50)
@@ -463,10 +463,11 @@ data class UserOrderFilter(
     @QueryField(table = "o") val status: String? = null
 )
 
-joinQuery.toPagination(spec, UserOrderRow::class, pageable, filter)   // GET ?status=PAID&sort=total,desc&size=500
+// GET ?status=PAID&sort=total,desc&size=500
+joinQuery.toPagination(spec, UserOrderRow::class, pageable.toPageRequest(UserOrderFilter::class), filter)
 ```
 
-The `Pageable` then goes through `PageRequestMapper` (see [Sort rules in paginators](#sort-rules-in-paginators)): unknown sort fields throw `IllegalArgumentException`, the default sort applies when none is requested, and the page size is capped (the returned `Pagination.limit` reflects the cap). Pass `sortableSource = OtherClass::class` to take the rules from another class, or `sortableSource = null` to opt out — then any DTO property or `alias.column` may be sorted on. With no filter, or an unannotated one, the `Pageable` is used as is.
+Unknown sort fields throw `IllegalArgumentException`, the default sort applies when none is requested, and the page size is capped (the returned `Pagination.limit` reflects the cap) — see [PageRequestMapper](#pagerequestmapper). Without the mapping, any DTO property or `alias.column` may be sorted on.
 
 #### Aggregates
 
@@ -513,7 +514,7 @@ ORDER BY total_sum DESC
 
 ### @Sortable
 
-Declare which fields the client is allowed to sort on. Apply it to the **filter class** of the endpoint (not to the document/table class) and pass that class to `PageRequestMapper` or as a paginator's `sortableSource`.
+Declare which fields the client is allowed to sort on. Apply it to the **filter class** of the endpoint (not to the document/table class) and pass that class to `PageRequestMapper`.
 
 ```kotlin
 @Sortable(name = "createdAt")
@@ -560,22 +561,6 @@ val safePageable = PageRequestMapper.toPageRequest(pageable, UserFilter::class) 
 val result = paginator.toPagination(query, safePageable, User::class)
 ```
 
-#### Sort rules in paginators
-
-`@Sortable` / `@SortableDefaults` belong on the **filter class**, never on the document/table class. The paginators apply them through a `sortableSource` parameter instead of a manual `toPageRequest` call:
-
-| | `sortableSource` default |
-|---|---|
-| `MongoDbPaginator.toPagination`, `R2dbcPaginator.toPagination` | `null` — they receive a built `Query`, not the filter, so pass `sortableSource = UserFilter::class` |
-| `R2dbcJoinQuery.toPagination` | the `filter`'s class when it is annotated — passing the filter is enough |
-
-```kotlin
-paginator.toPagination(query, pageable, User::class, sortableSource = UserFilter::class)
-joinQuery.toPagination(spec, UserOrderRow::class, pageable, filter)          // rules from filter's class
-```
-
-- Mapping is idempotent: a `Pageable` you already ran through `toPageRequest` passes unchanged, because already-mapped field names (`fullName` below) are accepted alongside the API names (`name`). An API name still wins if it equals another entry's field.
-
 **Full controller example:**
 
 ```kotlin
@@ -596,7 +581,7 @@ class UserController(private val paginator: MongoDbPaginator) {
         val query = Query()
         filter.search?.let { query.addCriteria(Criteria.where("fullName").regex(it, "i")) }
 
-        return paginator.toPagination(query, pageable, User::class, sortableSource = UserFilter::class)
+        return paginator.toPagination(query, pageable.toPageRequest(UserFilter::class), User::class)
     }
 }
 ```

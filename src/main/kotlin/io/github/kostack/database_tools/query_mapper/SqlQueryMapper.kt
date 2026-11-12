@@ -6,20 +6,12 @@ import org.springframework.data.relational.core.query.CriteriaDefinition
 import org.springframework.data.relational.core.query.Query
 
 object SqlQueryMapper : QueryMapper<Criteria>() {
-  /**
-   * Maps the `@QueryField` properties of [source] into a query.
-   *
-   * The result is [base] with its criteria ANDed as `required AND (base criteria) AND mapped...`.
-   * Sort, limit, offset and columns of [base] are preserved. Each part is grouped,
-   * so an `OR` inside [required] or the base criteria keeps its precedence.
-   */
   fun toQuery(
     source: Any,
     base: Query = Query.empty(),
     required: CriteriaDefinition? = null
   ): Query = merge(base, required, toCriteriaList(source))
 
-  /** Returns [base] with [criteria] ANDed in front of its existing criteria. Sort, limit, offset and columns are kept. */
   fun and(
     base: Query,
     criteria: CriteriaDefinition
@@ -41,16 +33,11 @@ object SqlQueryMapper : QueryMapper<Criteria>() {
     return Query.query(combined).withModifiersOf(base)
   }
 
-  /**
-   * Maps the `@QueryField` properties of [source] grouped by [QueryField.table] (root = empty alias),
-   * each group ANDed into one criteria. Field order is preserved.
-   */
   fun toCriteriaByTable(source: Any): Map<String, Criteria> =
     toTableCriteriaList(source)
       .groupBy({ it.first }, { it.second })
       .mapValues { (_, criteria) -> combine(criteria)!! }
 
-  /** ANDs [parts] in order, grouping each so an inner `OR` keeps its precedence. Empty criteria are dropped. */
   internal fun combine(parts: List<CriteriaDefinition>): Criteria? =
     parts
       .filterNot { it is Criteria && it.isEmpty }
