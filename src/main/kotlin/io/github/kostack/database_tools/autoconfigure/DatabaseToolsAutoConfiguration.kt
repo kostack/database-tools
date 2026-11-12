@@ -4,6 +4,7 @@ import io.github.kostack.database_tools.paginator.MongoDbPaginator
 import io.github.kostack.database_tools.paginator.R2dbcPaginator
 import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
+import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -58,5 +59,13 @@ class DatabaseToolsAutoConfiguration {
     @ConditionalOnBean(DatabaseClient::class)
     @ConditionalOnMissingBean
     fun r2dbcDbPurger(databaseClient: DatabaseClient): R2dbcDbPurger = R2dbcDbPurger(databaseClient)
+  }
+
+  @Configuration(proxyBeanMethods = false)
+  @ConditionalOnClass(name = ["org.springframework.transaction.reactive.TransactionSynchronizationManager"])
+  class TransactionalConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    fun transactionalManager(): TransactionalManager = TransactionalManager()
   }
 }

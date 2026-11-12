@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.converter
+package io.github.kostack.database_tools.r2dbc.converter.list
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json

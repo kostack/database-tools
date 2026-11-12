@@ -1,10 +1,11 @@
 package io.github.kostack.database_tools.r2dbc.converter
 
+import io.github.kostack.database_tools.r2dbc.converter.list.ListToStringConverter
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 /**
- * Tests for the [ListToStringConverter] class.
+ * Tests for the [io.github.kostack.database_tools.r2dbc.converter.list.ListToStringConverter] class.
  * 
  * The ListToStringConverter is responsible for converting a `List<String>` into a serialized JSON string.
  * It ensures that empty lists are serialized to a default value: "[]".

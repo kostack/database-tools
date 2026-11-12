@@ -55,7 +55,6 @@ class R2dbcDbPurger(
     }
   }
 
-  // Keep restoration and release in the same cleanup publisher, including on cancellation.
   private fun restoreAndClose(connection: Connection): Mono<Void> =
     Mono.usingWhen(
       Mono.just(connection),

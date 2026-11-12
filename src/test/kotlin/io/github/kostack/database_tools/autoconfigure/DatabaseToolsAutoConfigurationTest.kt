@@ -4,6 +4,7 @@ import io.github.kostack.database_tools.paginator.MongoDbPaginator
 import io.github.kostack.database_tools.paginator.R2dbcPaginator
 import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
+import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import io.mockk.mockk
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -64,6 +65,30 @@ class DatabaseToolsAutoConfigurationTest {
         assertThat(context).doesNotHaveBean(MongoDbPaginator::class.java)
         assertThat(context).doesNotHaveBean(MongoDbPurger::class.java)
       }
+  }
+
+  @Test
+  fun `configures transactional manager when spring tx is available`() {
+    contextRunner.run { context ->
+      assertThat(context).hasSingleBean(TransactionalManager::class.java)
+      assertThat(context.getBean(TransactionalManager::class.java).isRunning).isTrue()
+    }
+  }
+
+  @Test
+  fun `stops transactional manager when context closes`() {
+    contextRunner.run { context ->
+      val manager = context.getBean(TransactionalManager::class.java)
+      context.close()
+      assertThat(manager.isRunning).isFalse()
+    }
+  }
+
+  @Test
+  fun `does not configure transactional manager when spring tx is missing`() {
+    contextRunner
+      .withClassLoader(FilteredClassLoader("org.springframework.transaction"))
+      .run { context -> assertThat(context).doesNotHaveBean(TransactionalManager::class.java) }
   }
 
   @Configuration(proxyBeanMethods = false)

@@ -59,6 +59,7 @@ dependencies {
 
   compileOnly("io.asyncer:r2dbc-mysql:$r2dbcMysqlVersion")
   testImplementation("io.asyncer:r2dbc-mysql:$r2dbcMysqlVersion")
+  testImplementation("io.r2dbc:r2dbc-h2")
 
   compileOnly("io.swagger.core.v3:swagger-annotations:$swaggerAnnotationsVersion")
   testImplementation("io.swagger.core.v3:swagger-annotations:$swaggerAnnotationsVersion")
