@@ -1,17 +1,17 @@
-package io.github.kostack.database_tools.r2dbc.converter
+package io.github.kostack.database_tools.r2dbc.converter.list
 
-import io.github.kostack.database_tools.r2dbc.converter.list.ListToStringConverter
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import tools.jackson.databind.json.JsonMapper
 
 /**
- * Tests for the [io.github.kostack.database_tools.r2dbc.converter.list.ListToStringConverter] class.
+ * Tests for the [ListToStringConverter] class.
  * 
  * The ListToStringConverter is responsible for converting a `List<String>` into a serialized JSON string.
  * It ensures that empty lists are serialized to a default value: "[]".
  */
 class ListToStringConverterTest {
-  private val converter = ListToStringConverter()
+  private val converter = ListToStringConverter(JsonMapper.builder().build())
 
   @Test
   fun `convert should serialize non-empty list`() {

@@ -5,7 +5,6 @@ plugins {
   kotlin("jvm") version "2.3.0"
   kotlin("kapt") version "2.3.0"
   kotlin("plugin.spring") version "2.3.0"
-  kotlin("plugin.serialization") version "2.3.0"
   id("org.springframework.boot") version "4.1.0"
   id("io.spring.dependency-management") version "1.1.7"
   id("com.vanniktech.maven.publish") version "0.33.0"
@@ -42,7 +41,6 @@ dependencies {
   // Kotlin
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
-  implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
   implementation("org.jetbrains.kotlin:kotlin-reflect")
 
   api("org.springframework.boot:spring-boot-starter-webflux")
