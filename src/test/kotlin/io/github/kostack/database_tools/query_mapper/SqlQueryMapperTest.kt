@@ -497,4 +497,16 @@ class SqlQueryMapperTest {
     assertEquals("tenant_id = 't1' AND (name = 'John')", query.criteria.orElseThrow().toString())
     assertEquals(7, query.limit)
   }
+
+  // --- join tables ---
+
+  data class JoinedFilter(
+    @QueryField val name: String? = "a",
+    @QueryField(table = "o") val status: String? = "PAID"
+  )
+
+  @Test
+  fun `toQuery rejects fields targeting a joined table`() {
+    assertThrows<IllegalArgumentException> { SqlQueryMapper.toQuery(JoinedFilter()) }
+  }
 }

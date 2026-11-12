@@ -34,15 +34,30 @@ object SqlQueryMapper : QueryMapper<Criteria>() {
       return base
     }
 
-    val parts = listOfNotNull(required, base.criteria.orElse(null)) + mapped
-
     val combined =
-      parts.fold(Criteria.empty()) { acc, next ->
-        if (acc.isEmpty) group(next) else acc.and(next)
-      }
+      combine(listOfNotNull(required, base.criteria.orElse(null)) + mapped)
+        ?: return base
 
     return Query.query(combined).withModifiersOf(base)
   }
+
+  /**
+   * Maps the `@QueryField` properties of [source] grouped by [QueryField.table] (root = empty alias),
+   * each group ANDed into one criteria. Field order is preserved.
+   */
+  fun toCriteriaByTable(source: Any): Map<String, Criteria> =
+    toTableCriteriaList(source)
+      .groupBy({ it.first }, { it.second })
+      .mapValues { (_, criteria) -> combine(criteria)!! }
+
+  /** ANDs [parts] in order, grouping each so an inner `OR` keeps its precedence. Empty criteria are dropped. */
+  internal fun combine(parts: List<CriteriaDefinition>): Criteria? =
+    parts
+      .filterNot { it is Criteria && it.isEmpty }
+      .takeIf { it.isNotEmpty() }
+      ?.fold(Criteria.empty()) { acc, next ->
+        if (acc.isEmpty) group(next) else acc.and(next)
+      }
 
   private fun group(definition: CriteriaDefinition): Criteria =
     if (definition is Criteria && !definition.hasPrevious()) {

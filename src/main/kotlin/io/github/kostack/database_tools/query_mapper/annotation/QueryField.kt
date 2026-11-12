@@ -14,5 +14,10 @@ annotation class QueryField(
   /**
    * Skip blank String and null values.
    */
-  val ignoreEmpty: Boolean = true
+  val ignoreEmpty: Boolean = true,
+  /**
+   * Alias of the joined table this column belongs to (see `JoinSpec`).
+   * Empty = root table. Only supported by join queries; single-table mappers reject it.
+   */
+  val table: String = ""
 )

@@ -6,7 +6,20 @@ import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaField
 
 abstract class QueryMapper<C> {
-  fun toCriteriaList(source: Any): List<C> {
+  /**
+   * Maps the `@QueryField` properties of [source] for a single-table query.
+   * Fails if any field targets a joined table via [QueryField.table].
+   */
+  fun toCriteriaList(source: Any): List<C> =
+    toTableCriteriaList(source).map { (table, criteria) ->
+      require(table.isEmpty()) {
+        "QueryField.table ('$table') on ${source::class.simpleName} is only supported by join queries"
+      }
+      criteria
+    }
+
+  /** Maps the `@QueryField` properties of [source] as (table alias, criteria) pairs; root fields have an empty alias. */
+  fun toTableCriteriaList(source: Any): List<Pair<String, C>> {
     return source::class.memberProperties.mapNotNull { property ->
       val field =
         property.javaField?.getAnnotation(QueryField::class.java)
@@ -23,12 +36,13 @@ abstract class QueryMapper<C> {
 
       val fieldName = field.name.ifBlank { property.name }
 
-      buildCriteria(
-        fieldName = fieldName,
-        propertyName = property.name,
-        value = value,
-        field = field
-      )
+      field.table to
+        buildCriteria(
+          fieldName = fieldName,
+          propertyName = property.name,
+          value = value,
+          field = field
+        )
     }
   }
 

@@ -15,6 +15,7 @@ A Kotlin/Spring library that provides reactive pagination, flexible query mappin
   - [MongoQueryMapper](#mongoquarymapper)
   - [SqlQueryMapper](#sqlquerymapper)
   - [Query Mapper Extensions](#query-mapper-extensions)
+  - [Join Queries (R2DBC)](#join-queries-r2dbc)
 - [Page Request Mapping](#page-request-mapping)
   - [@Sortable](#sortable)
   - [@SortableDefaults](#sortabledefaults)
@@ -203,7 +204,8 @@ Place `@QueryField` on properties of a filter data class to declare how each fie
 @QueryField(
     name        = "",               // DB field / column name. Defaults to the Kotlin property name.
     operator    = QueryOperator.EQ,
-    ignoreEmpty = true              // Skip null and blank String values (default: true).
+    ignoreEmpty = true,             // Skip null and blank String values (default: true).
+    table       = ""                // Joined table alias; see Join Queries. Empty = root table.
 )
 ```
 
@@ -305,6 +307,21 @@ SQL wildcards in user input are always escaped — `%`, `_`, and `\` in the valu
 
 `REGEX` and `REGEX_IGNORE_CASE` throw `UnsupportedOperationException` on SQL — use `CONTAINS`, `STARTS_WITH`, or `ENDS_WITH` instead.
 
+**Merging into an existing query.** `toQuery(filter, base, required)` keeps `base`'s sort, limit, offset and columns and combines the criteria as `required AND (base criteria) AND mapped…`. Each part is parenthesised, so an `OR` inside `base` or `required` keeps its meaning:
+
+```kotlin
+val query = SqlQueryMapper.toQuery(
+    filter,
+    base     = Query.empty().with(pageable),
+    required = Criteria.where("tenant_id").`is`(tenantId)
+)
+// WHERE tenant_id = ? AND (customer_id = ?) ... ORDER BY ... LIMIT ...
+
+SqlQueryMapper.and(query, Criteria.where("deleted").isFalse) // AND one criteria into a query
+```
+
+Single-table mappers (SQL and Mongo) reject fields with `@QueryField(table = ...)`; use [Join Queries](#join-queries-r2dbc).
+
 ---
 
 ### Query Mapper Extensions
@@ -314,9 +331,15 @@ import io.github.kostack.database_tools.query_mapper.extension.toMappedQuery
 import io.github.kostack.database_tools.query_mapper.extension.toPageRequest
 import io.github.kostack.database_tools.query_mapper.extension.map
 
-// Build a query directly from a filter object
-val mongoQuery = Query().toMappedQuery(filter)       // MongoDB
-val sqlQuery   = Query.empty().toMappedQuery(filter) // SQL
+// Map a filter into a query; the receiver's sort / paging / columns are kept
+val mongoQuery = Query().limit(20).toMappedQuery(filter)              // MongoDB (receiver is copied, not mutated)
+val sqlQuery   = Query.empty().with(pageable).toMappedQuery(filter)   // SQL
+
+// Mandatory criteria go first
+val scoped = Query.empty().toMappedQuery(filter, required = Criteria.where("tenant_id").`is`(tenantId))
+
+// AND extra criteria into an existing SQL query (sort / paging kept)
+val active = sqlQuery.and(Criteria.where("deleted").isFalse)
 
 // Validate and sanitise a Pageable (delegates to PageRequestMapper)
 val pageRequest = pageable.toPageRequest(UserEntity::class)
@@ -326,6 +349,63 @@ val userDtos: Pagination<UserDto> = userPagination.map { UserDto(it) }
 ```
 
 ---
+
+### Join Queries (R2DBC)
+
+Spring Data's `Query` / `Criteria` are single-table. `R2dbcJoinQuery` (auto-configured when an `R2dbcEntityTemplate` bean exists) runs the same `@QueryField` filters over a root table plus joined tables and maps each row into a DTO.
+
+**1. Describe the joins** with `JoinSpec`. In each `on` pair the left side is `alias.column` of an already declared table (bare name = root), the right side a column of the joined table. Entity property names are mapped to their columns; anything else is used as a raw column name.
+
+```kotlin
+val spec = JoinSpec.from(User::class, "u")
+    .join(Order::class, "o", "u.id" to "userId")                               // INNER JOIN (default)
+    .join(Address::class, "a", "u.id" to "userId", mode = JoinMode.LEFT)       // LEFT OUTER JOIN
+    .join(Item::class, "i", "o.id" to "orderId", mode = JoinMode.EXISTS)       // filter only
+```
+
+| Mode | SQL | Columns selectable | Notes |
+|---|---|---|---|
+| `INNER` | `JOIN … ON …` | yes | one result row per joined row |
+| `LEFT` | `LEFT OUTER JOIN … ON …` | yes | missing matches give `NULL`s |
+| `EXISTS` | `u.id IN (SELECT i.order_id FROM … WHERE <criteria>)` | no | semi-join: never duplicates rows; skipped when no criteria target it |
+
+**2. Tag filter fields** with the table alias:
+
+```kotlin
+data class UserOrderFilter(
+    @QueryField(operator = QueryOperator.CONTAINS) val name: String? = null,      // root (u)
+    @QueryField(table = "o") val status: String? = null,                          // o.status
+    @QueryField(table = "o", name = "total", operator = QueryOperator.GTE) val minTotal: Int? = null,
+    @QueryField(table = "i") val sku: String? = null                              // EXISTS on items
+)
+```
+
+**3. Declare the result DTO** with `@SelectColumn`. Unannotated properties come from the root table; each value is selected `AS` the DTO property's column name.
+
+```kotlin
+data class UserOrderRow(
+    val id: Long,
+    val name: String,
+    @SelectColumn(table = "o", name = "id") val orderId: Long,
+    @SelectColumn(table = "o") val status: String,
+    @SelectColumn(table = "a", name = "city") val city: String?   // LEFT → nullable
+)
+```
+
+**4. Run it:**
+
+```kotlin
+val rows: Flow<UserOrderRow> = joinQuery.select(spec, UserOrderRow::class, filter, Query.empty().sort(Sort.by("orderId")))
+val total: Long = joinQuery.count(spec, filter)
+val page: Pagination<UserOrderRow> = joinQuery.toPagination(spec, UserOrderRow::class, pageable, filter)
+
+// Mandatory criteria per alias are placed first for that table:
+joinQuery.select(spec, UserOrderRow::class, filter, required = mapOf("u" to Criteria.where("tenant_id").`is`(tenantId)))
+```
+
+- Criteria per alias: `required[alias] AND (query criteria — root only) AND filter fields`; each part is parenthesised.
+- Sort properties are DTO property names (`orderId`) or `alias.column` (`o.total`); anything that isn't a plain identifier is rejected. Run client sorts through `PageRequestMapper` with `@Sortable` on the DTO to allowlist them.
+- Everything is bound as parameters. Bind markers are generated in SQL text order, as MySQL's positional `?` requires.
 
 ## Page Request Mapping
 

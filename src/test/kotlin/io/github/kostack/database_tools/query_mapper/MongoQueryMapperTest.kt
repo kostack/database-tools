@@ -4,6 +4,7 @@ import io.github.kostack.database_tools.query_mapper.annotation.QueryField
 import io.github.kostack.database_tools.query_mapper.extension.toMappedQuery
 import org.bson.Document
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.springframework.data.domain.Sort
 import org.springframework.data.mongodb.core.query.Criteria
 import org.springframework.data.mongodb.core.query.Query
@@ -454,5 +455,17 @@ class MongoQueryMapperTest {
 
     assertEquals(listOf(Document("name", "John")), query.queryObject.getList("\$and", Document::class.java))
     assertEquals(5, query.limit)
+  }
+
+  // --- join tables ---
+
+  data class JoinedFilter(
+    @QueryField val name: String? = "a",
+    @QueryField(table = "o") val status: String? = "PAID"
+  )
+
+  @Test
+  fun `toQuery rejects fields targeting a joined table`() {
+    assertThrows<IllegalArgumentException> { MongoQueryMapper.toQuery(JoinedFilter()) }
   }
 }

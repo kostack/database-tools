@@ -4,6 +4,7 @@ import io.github.kostack.database_tools.paginator.MongoDbPaginator
 import io.github.kostack.database_tools.paginator.R2dbcPaginator
 import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
+import io.github.kostack.database_tools.r2dbc.join.R2dbcJoinQuery
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -50,6 +51,11 @@ class DatabaseToolsAutoConfiguration {
     @ConditionalOnBean(R2dbcEntityTemplate::class)
     @ConditionalOnMissingBean
     fun r2dbcPaginator(entityTemplate: R2dbcEntityTemplate): R2dbcPaginator = R2dbcPaginator(entityTemplate)
+
+    @Bean
+    @ConditionalOnBean(R2dbcEntityTemplate::class)
+    @ConditionalOnMissingBean
+    fun r2dbcJoinQuery(entityTemplate: R2dbcEntityTemplate): R2dbcJoinQuery = R2dbcJoinQuery(entityTemplate)
   }
 
   @Configuration(proxyBeanMethods = false)
