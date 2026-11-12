@@ -39,7 +39,7 @@ A Kotlin/Spring library that provides reactive pagination, flexible query mappin
 
 ```kotlin
 dependencies {
-    implementation("io.github.database-tools:database-tools:<version>")
+    implementation("io.github.kostack:database-tools:<version>")
 }
 ```
 
@@ -47,7 +47,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'io.github.database-tools:database-tools:<version>'
+    implementation 'io.github.kostack:database-tools:<version>'
 }
 ```
 
@@ -55,7 +55,7 @@ dependencies {
 
 ```xml
 <dependency>
-    <groupId>io.github.database-tools</groupId>
+    <groupId>io.github.kostack</groupId>
     <artifactId>database-tools</artifactId>
     <version>VERSION</version>
 </dependency>
@@ -63,7 +63,24 @@ dependencies {
 
 Replace `<version>` / `VERSION` with the latest release tag from [GitHub Releases](https://github.com/kostack/database-tools/releases).
 
-The library is published to [Maven Central](https://central.sonatype.com/artifact/io.github.database-tools/database-tools), so no additional repository configuration is needed.
+The library is published to [Maven Central](https://central.sonatype.com/artifact/io.github.kostack/database-tools), so no additional repository configuration is needed.
+
+### Requirements
+
+The library declares no transitive dependencies — everything it uses is provided by your application, so it never overrides your versions. Built against **Spring Boot 4.1** (Kotlin 2.4, Java 25).
+
+| Always required | Notes |
+|---|---|
+| `org.springframework.boot:spring-boot-starter-webflux` | |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-core`, `kotlinx-coroutines-reactor` | |
+| `org.jetbrains.kotlin:kotlin-reflect` | used by the query mappers; Spring's Kotlin support needs it anyway |
+
+| Only for the features you use | Feature |
+|---|---|
+| `org.springframework.boot:spring-boot-starter-data-mongodb-reactive` | `MongoDbPaginator`, `MongoQueryMapper`, `MongoDbPurger` |
+| `org.springframework.boot:spring-boot-starter-data-r2dbc` | `R2dbcPaginator`, `SqlQueryMapper`, join queries, `R2dbcDbPurger`, converters, `TransactionalManager` |
+| `io.asyncer:r2dbc-mysql` | MySQL (`R2dbcDbPurger` is MySQL-only) |
+| `io.swagger.core.v3:swagger-annotations` | OpenAPI schema annotations on `Pagination` |
 
 ---
 

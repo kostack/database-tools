@@ -6,7 +6,7 @@ import tools.jackson.databind.json.JsonMapper
 
 /**
  * Tests for the [ListToStringConverter] class.
- * 
+ *
  * The ListToStringConverter is responsible for converting a `List<String>` into a serialized JSON string.
  * It ensures that empty lists are serialized to a default value: "[]".
  */
