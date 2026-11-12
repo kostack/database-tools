@@ -8,6 +8,7 @@ import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import io.github.kostack.database_tools.query_mapper.annotation.Sortable
 import io.github.kostack.database_tools.query_mapper.annotation.SortableDefaults
+import io.github.kostack.database_tools.query_mapper.extension.toPageRequest
 import io.r2dbc.spi.ConnectionFactories
 import io.r2dbc.spi.ConnectionFactory
 import kotlinx.coroutines.flow.toList
@@ -108,14 +109,19 @@ data class UsersWithoutOrdersFilter(
   ) val maxTotal: Int? = null
 )
 
-@SortableDefaults(defaultSortField = "orderId", defaultSortDirection = Sort.Direction.ASC, maxPageSize = 2)
-@Sortable(name = "orderId")
-@Sortable(name = "name")
-@Sortable(name = "total", field = "o.total")
 data class SortableOrderRow(
   val id: Long,
   val name: String,
   @SelectColumn(table = "o", name = "id") val orderId: Long
+)
+
+/** Sort rules live on the filter class, never on the result DTO or entity. */
+@SortableDefaults(defaultSortField = "orderId", defaultSortDirection = Sort.Direction.ASC, maxPageSize = 2)
+@Sortable(name = "orderId")
+@Sortable(name = "name")
+@Sortable(name = "total", field = "o.total")
+data class SortableOrderFilter(
+  @QueryField(table = "o") val status: String? = null
 )
 
 abstract class R2dbcJoinQueryContract {
@@ -520,7 +526,7 @@ abstract class R2dbcJoinQueryContract {
           spec,
           SortableOrderRow::class,
           PageRequest.of(0, 10),
-          sortableSource = SortableOrderRow::class
+          sortableSource = SortableOrderFilter::class
         )
       }
 
@@ -537,7 +543,7 @@ abstract class R2dbcJoinQueryContract {
           spec,
           SortableOrderRow::class,
           PageRequest.of(0, 2, Sort.by(Sort.Direction.DESC, "total")),
-          sortableSource = SortableOrderRow::class
+          sortableSource = SortableOrderFilter::class
         )
       }
 
@@ -546,14 +552,14 @@ abstract class R2dbcJoinQueryContract {
 
   @Test
   fun `sortableSource rejects fields that are not allowlisted`() {
-    // "status" is a valid column, but not @Sortable on the DTO
+    // "status" is a valid column, but not @Sortable on the filter
     assertThrows<IllegalArgumentException> {
       runBlocking {
         joinQuery.toPagination(
           spec,
           SortableOrderRow::class,
           PageRequest.of(0, 2, Sort.by("o.status")),
-          sortableSource = SortableOrderRow::class
+          sortableSource = SortableOrderFilter::class
         )
       }
     }
@@ -586,7 +592,7 @@ abstract class R2dbcJoinQueryContract {
           spec,
           SortableOrderRow::class,
           PageRequest.of(0, 2, Sort.by(Sort.Order.desc("name").ignoreCase())),
-          sortableSource = SortableOrderRow::class
+          sortableSource = SortableOrderFilter::class
         )
       }
 
@@ -630,6 +636,74 @@ abstract class R2dbcJoinQueryContract {
         runBlocking { joinQuery.select(JoinSpec.from(JoinUser::class, "u"), WithEmbedded::class).toList() }
       }
     assertTrue(failure.message!!.contains("@Embedded"), failure.message)
+  }
+
+  // --- automatic @Sortable from the filter class ---
+
+  @Test
+  fun `join toPagination applies Sortable of an annotated filter automatically`() {
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 10),
+          SortableOrderFilter()
+        )
+      }
+
+    assertEquals(listOf(10L, 11L), page.content.map { it.orderId }) // default sort orderId ASC
+    assertEquals(2, page.limit) // maxPageSize = 2
+  }
+
+  @Test
+  fun `automatic filter rules combine with the filter criteria`() {
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "total")),
+          SortableOrderFilter("PAID")
+        )
+      }
+
+    assertEquals(listOf(12L, 11L), page.content.map { it.orderId })
+    assertEquals(2L, page.total)
+  }
+
+  @Test
+  fun `join toPagination accepts an already mapped pageable`() {
+    val mapped = PageRequest.of(0, 2, Sort.by(Sort.Direction.DESC, "total")).toPageRequest(SortableOrderFilter::class)
+    val page = runBlocking { joinQuery.toPagination(spec, SortableOrderRow::class, mapped, SortableOrderFilter()) }
+
+    assertEquals(listOf(12L, 10L), page.content.map { it.orderId })
+  }
+
+  @Test
+  fun `join toPagination sortableSource null opts out`() {
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 10),
+          SortableOrderFilter(),
+          sortableSource = null
+        )
+      }
+
+    assertEquals(3, page.content.size)
+    assertEquals(10, page.limit)
+  }
+
+  @Test
+  fun `unannotated filter or no filter leaves the pageable as is`() {
+    val page =
+      runBlocking { joinQuery.toPagination(spec, SortableOrderRow::class, PageRequest.of(0, 10), UserOrderFilter()) }
+
+    assertEquals(3, page.content.size)
+    assertEquals(10, page.limit)
   }
 }
 

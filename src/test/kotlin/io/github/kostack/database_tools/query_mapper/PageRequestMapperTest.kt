@@ -171,4 +171,56 @@ class PageRequestMapperTest {
       PageRequestMapper.toPageRequest(pageable, EntityNoAnnotations::class)
     }
   }
+
+  // --- automatic use by paginators ---
+
+  @SortableDefaults(maxPageSize = 5)
+  class EntityOnlyDefaults
+
+  @Sortable(name = "a", field = "b")
+  @Sortable(name = "b", field = "c")
+  class EntityWithOverlappingNames
+
+  @Test
+  fun `isSortable detects Sortable or SortableDefaults`() {
+    assertTrue(PageRequestMapper.isSortable(EntityWithDefaults::class))
+    assertTrue(PageRequestMapper.isSortable(EntityNoDefaults::class))
+    assertTrue(PageRequestMapper.isSortable(EntityOnlyDefaults::class))
+    assertFalse(PageRequestMapper.isSortable(EntityNoAnnotations::class))
+  }
+
+  @Test
+  fun `mapping twice is a no-op`() {
+    val pageable = PageRequest.of(1, 50, Sort.by(Sort.Order.desc("createdAt").ignoreCase()))
+
+    val once = PageRequestMapper.toPageRequest(pageable, EntityWithDefaults::class)
+    val twice = PageRequestMapper.toPageRequest(once, EntityWithDefaults::class)
+
+    assertEquals(once, twice)
+    assertTrue(twice.sort.getOrderFor("created_at")!!.isIgnoreCase)
+  }
+
+  @Test
+  fun `already-mapped field name is accepted`() {
+    val result =
+      PageRequestMapper.toPageRequest(
+        PageRequest.of(0, 10, Sort.by("created_at")),
+        EntityWithDefaults::class
+      )
+    assertNotNull(result.sort.getOrderFor("created_at"))
+  }
+
+  @Test
+  fun `api name wins over another entry's field`() {
+    val result = PageRequestMapper.toPageRequest(PageRequest.of(0, 10, Sort.by("b")), EntityWithOverlappingNames::class)
+    assertNotNull(result.sort.getOrderFor("c"))
+    assertNull(result.sort.getOrderFor("b"))
+  }
+
+  @Test
+  fun `fields that are neither api names nor mapped fields are still rejected`() {
+    assertThrows<IllegalArgumentException> {
+      PageRequestMapper.toPageRequest(PageRequest.of(0, 10, Sort.by("password")), EntityWithDefaults::class)
+    }
+  }
 }

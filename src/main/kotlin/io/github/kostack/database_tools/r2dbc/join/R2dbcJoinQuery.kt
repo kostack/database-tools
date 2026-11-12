@@ -100,10 +100,11 @@ class R2dbcJoinQuery(
   /**
    * Selects one page plus the total count.
    *
-   * @param sortableSource when set, [pageable] first goes through [PageRequestMapper] with this class's
-   *   `@Sortable` / `@SortableDefaults`: unknown sort fields are rejected, API names are mapped to their
-   *   `field` (a DTO property or `alias.column`), the default sort applies and the page size is capped.
-   *   Without it, any DTO property or `alias.column` may be sorted on.
+   * @param sortableSource class carrying `@Sortable` / `@SortableDefaults` whose rules [pageable] goes through
+   *   ([PageRequestMapper]): unknown sort fields are rejected, API names are mapped to their `field`
+   *   (a DTO property or `alias.column`), the default sort applies and the page size is capped.
+   *   Defaults to the [filter]'s class when it is annotated; pass `null` to opt out, in which case any
+   *   DTO property or `alias.column` may be sorted on.
    */
   suspend fun <T : Any> toPagination(
     spec: JoinSpec,
@@ -112,7 +113,7 @@ class R2dbcJoinQuery(
     filter: Any? = null,
     query: Query = Query.empty(),
     required: Map<String, CriteriaDefinition> = emptyMap(),
-    sortableSource: KClass<*>? = null
+    sortableSource: KClass<*>? = filter?.let { it::class }?.takeIf(PageRequestMapper::isSortable)
   ): Pagination<T> =
     coroutineScope {
       val page = sortableSource?.let { PageRequestMapper.toPageRequest(pageable, it) } ?: pageable

@@ -1,5 +1,6 @@
 package io.github.kostack.database_tools.paginator
 
+import io.github.kostack.database_tools.query_mapper.PageRequestMapper
 import io.github.kostack.database_tools.r2dbc.join.JoinSpec
 import io.github.kostack.database_tools.r2dbc.join.R2dbcJoinQuery
 import kotlinx.coroutines.async
@@ -21,20 +22,32 @@ class R2dbcPaginator(
    * Sorts with `ignoreCase()` orders are rendered as `LOWER(column)`. Spring's `Query` cannot express them,
    * so such requests run through [R2dbcJoinQuery] with a single-table spec; a column projection
    * (`Query.columns`) is not supported in that case.
+   *
+   * @param sortableSource class carrying `@Sortable` / `@SortableDefaults` (typically the filter class) to apply
+   *   via [PageRequestMapper]: allowlist, default sort, page-size cap. `null` (default) leaves [pageable] as is.
    */
   suspend fun <T : Any> toPagination(
     query: Query,
     pageable: Pageable,
-    targetClass: KClass<T>
+    targetClass: KClass<T>,
+    sortableSource: KClass<*>? = null
   ): Pagination<T> {
-    if (pageable.sort.any { it.isIgnoreCase }) {
+    val page = sortableSource?.let { PageRequestMapper.toPageRequest(pageable, it) } ?: pageable
+
+    if (page.sort.any { it.isIgnoreCase }) {
       require(query.columns.isEmpty()) {
         "Column projection is not supported together with ignoreCase sorting"
       }
-      return joinQuery.toPagination(JoinSpec.from(targetClass, ROOT_ALIAS), targetClass, pageable, query = query)
+      return joinQuery.toPagination(
+        JoinSpec.from(targetClass, ROOT_ALIAS),
+        targetClass,
+        page,
+        query = query,
+        sortableSource = null
+      )
     }
 
-    return templatePagination(query, pageable, targetClass)
+    return templatePagination(query, page, targetClass)
   }
 
   private suspend fun <T : Any> templatePagination(

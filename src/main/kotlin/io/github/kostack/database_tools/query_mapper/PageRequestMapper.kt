@@ -12,6 +12,10 @@ import kotlin.reflect.full.findAnnotations
 object PageRequestMapper {
   private const val FALLBACK_MAX_PAGE_SIZE = 100
 
+  /** Whether [source] declares any `@Sortable` or `@SortableDefaults`, i.e. opts into sort allowlisting. */
+  fun isSortable(source: KClass<*>): Boolean =
+    source.findAnnotations<Sortable>().isNotEmpty() || source.findAnnotation<SortableDefaults>() != null
+
   fun toPageRequest(
     pageable: Pageable,
     sortableSource: KClass<*>
@@ -42,16 +46,21 @@ object PageRequestMapper {
         .findAnnotations<Sortable>()
         .associateBy { it.name }
 
+    // Already-mapped DB fields are accepted as well, so mapping a PageRequest twice is a no-op
+    // (e.g. a caller's own toPageRequest() followed by a paginator's automatic one).
+    val mappedFields =
+      sortableFields.values.associateBy { it.field.ifBlank { it.name } }
+
     validateSortFields(
       sort = pageable.sort,
-      allowedFields = sortableFields.keys
+      allowedFields = sortableFields.keys + mappedFields.keys
     )
 
     val mappedOrders =
       pageable.sort
-        .filter { order -> order.property in sortableFields }
         .map { order ->
-          val sortable = sortableFields.getValue(order.property)
+          // API name first; a name that is also another entry's field keeps its API meaning
+          val sortable = sortableFields[order.property] ?: mappedFields.getValue(order.property)
           val mongoField = sortable.field.ifBlank { sortable.name }
 
           Sort

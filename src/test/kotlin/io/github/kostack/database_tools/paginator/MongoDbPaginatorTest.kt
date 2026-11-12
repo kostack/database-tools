@@ -1,11 +1,18 @@
 package io.github.kostack.database_tools.paginator
 
+import io.github.kostack.database_tools.query_mapper.annotation.Sortable
+import io.github.kostack.database_tools.query_mapper.annotation.SortableDefaults
+import io.mockk.CapturingSlot
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.test.runTest
+import org.bson.Document
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
+import org.springframework.data.domain.Sort
 import org.springframework.data.mongodb.core.ReactiveMongoTemplate
 import org.springframework.data.mongodb.core.query.Query
 import reactor.core.publisher.Flux
@@ -89,5 +96,67 @@ class MongoDbPaginatorTest {
       assertEquals(5, result.limit)
       assertEquals(50, result.offset)
       assertEquals(3L, result.total)
+    }
+
+  // --- sortableSource (filter class) ---
+
+  /** Target class: never annotated. */
+  class SortableDoc
+
+  @SortableDefaults(defaultSortField = "name", maxPageSize = 5)
+  @Sortable(name = "name", field = "full_name")
+  data class SortableFilter(
+    val name: String? = null
+  )
+
+  private fun stubSortableDoc(captured: CapturingSlot<Query>) {
+    every { mongoTemplate.count(any<Query>(), SortableDoc::class.java) } returns Mono.just(0L)
+    every { mongoTemplate.find(capture(captured), SortableDoc::class.java) } returns Flux.empty()
+  }
+
+  @Test
+  fun `sortableSource applies the filter class rules`() =
+    runTest {
+      val captured = slot<Query>()
+      stubSortableDoc(captured)
+
+      val result =
+        paginator.toPagination(
+          Query(),
+          PageRequest.of(0, 50),
+          SortableDoc::class,
+          sortableSource = SortableFilter::class
+        )
+
+      assertEquals(5, result.limit)
+      assertEquals(5, captured.captured.limit)
+      assertEquals(Document("full_name", -1), captured.captured.sortObject)
+    }
+
+  @Test
+  fun `sortableSource rejects sort fields not allowed by the filter class`() =
+    runTest {
+      stubSortableDoc(slot())
+
+      assertThrows<IllegalArgumentException> {
+        paginator.toPagination(
+          Query(),
+          PageRequest.of(0, 10, Sort.by("secret")),
+          SortableDoc::class,
+          sortableSource = SortableFilter::class
+        )
+      }
+    }
+
+  @Test
+  fun `pageable is used as is without sortableSource`() =
+    runTest {
+      val captured = slot<Query>()
+      stubSortableDoc(captured)
+
+      val result = paginator.toPagination(Query(), PageRequest.of(0, 50), SortableDoc::class)
+
+      assertEquals(50, result.limit)
+      assertTrue(captured.captured.sortObject.isEmpty())
     }
 }
