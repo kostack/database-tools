@@ -1,9 +1,16 @@
 package io.github.kostack.database_tools.query_mapper
 
 import io.github.kostack.database_tools.query_mapper.annotation.QueryField
+import io.github.kostack.database_tools.query_mapper.extension.and
+import io.github.kostack.database_tools.query_mapper.extension.toMappedQuery
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.springframework.data.domain.Sort
+import org.springframework.data.relational.core.query.Criteria
+import org.springframework.data.relational.core.query.Query
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class SqlQueryMapperTest {
@@ -379,5 +386,115 @@ class SqlQueryMapperTest {
     val criteria = query.criteria.orElseThrow().toString()
     assertTrue(criteria.contains("name"))
     assertFalse(criteria.contains("age"))
+  }
+
+  // --- merging into a base query ---
+
+  private val tenant = Criteria.where("tenant_id").`is`("t1")
+
+  @Test
+  fun `toQuery keeps sort limit offset and columns of base query`() {
+    val base =
+      Query
+        .empty()
+        .sort(Sort.by("name"))
+        .limit(10)
+        .offset(20)
+        .columns("id", "name")
+
+    val query = SqlQueryMapper.toQuery(EqStringFilter(name = "John"), base)
+
+    assertTrue(
+      query.criteria
+        .orElseThrow()
+        .toString()
+        .contains("name = 'John'")
+    )
+    assertEquals(Sort.by("name"), query.sort)
+    assertEquals(10, query.limit)
+    assertEquals(20, query.offset)
+    assertEquals(listOf("id", "name"), query.columns.map { it.reference })
+  }
+
+  @Test
+  fun `toQuery returns base unchanged when nothing is mapped and nothing is required`() {
+    val base = Query.empty().limit(5)
+    assertSame(base, SqlQueryMapper.toQuery(EqStringFilter(name = null), base))
+  }
+
+  @Test
+  fun `toQuery places required criteria first and ANDs the mapped criteria`() {
+    val query = SqlQueryMapper.toQuery(MultiFilter(name = "Alice", age = 25), required = tenant)
+    val sql = query.criteria.orElseThrow().toString()
+
+    assertTrue(sql.startsWith("tenant_id = 't1'"), sql)
+    assertTrue(sql.contains("AND (name = 'Alice')"), sql)
+    assertTrue(sql.contains("AND (age > 25)"), sql)
+  }
+
+  @Test
+  fun `toQuery applies required criteria even when filter maps nothing`() {
+    val query = SqlQueryMapper.toQuery(EqStringFilter(name = null), required = tenant)
+    assertEquals("tenant_id = 't1'", query.criteria.orElseThrow().toString())
+  }
+
+  @Test
+  fun `toQuery groups OR in base criteria so precedence is kept`() {
+    val base =
+      Query.query(
+        Criteria
+          .where("a")
+          .`is`(1)
+          .or("b")
+          .`is`(2)
+      )
+    val sql =
+      SqlQueryMapper
+        .toQuery(EqStringFilter(name = "John"), base, tenant)
+        .criteria
+        .orElseThrow()
+        .toString()
+
+    assertEquals("tenant_id = 't1' AND (a = 1 OR b = 2) AND (name = 'John')", sql)
+  }
+
+  @Test
+  fun `toQuery groups OR in required criteria so precedence is kept`() {
+    val required =
+      Criteria
+        .where("a")
+        .`is`(1)
+        .or("b")
+        .`is`(2)
+    val sql =
+      SqlQueryMapper
+        .toQuery(EqStringFilter(name = "John"), required = required)
+        .criteria
+        .orElseThrow()
+        .toString()
+
+    assertEquals("(a = 1 OR b = 2) AND (name = 'John')", sql)
+  }
+
+  @Test
+  fun `and ANDs criteria into base query and keeps paging`() {
+    val base = Query.query(Criteria.where("name").`is`("John")).limit(3)
+    val query = SqlQueryMapper.and(base, tenant)
+
+    assertEquals("tenant_id = 't1' AND (name = 'John')", query.criteria.orElseThrow().toString())
+    assertEquals(3, query.limit)
+  }
+
+  @Test
+  fun `extensions delegate to the mapper`() {
+    val query =
+      Query
+        .empty()
+        .limit(7)
+        .toMappedQuery(EqStringFilter(name = "John"))
+        .and(tenant)
+
+    assertEquals("tenant_id = 't1' AND (name = 'John')", query.criteria.orElseThrow().toString())
+    assertEquals(7, query.limit)
   }
 }

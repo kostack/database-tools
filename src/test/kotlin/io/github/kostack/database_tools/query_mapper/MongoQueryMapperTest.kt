@@ -1,8 +1,12 @@
 package io.github.kostack.database_tools.query_mapper
 
 import io.github.kostack.database_tools.query_mapper.annotation.QueryField
+import io.github.kostack.database_tools.query_mapper.extension.toMappedQuery
 import org.bson.Document
 import org.junit.jupiter.api.Test
+import org.springframework.data.domain.Sort
+import org.springframework.data.mongodb.core.query.Criteria
+import org.springframework.data.mongodb.core.query.Query
 import java.util.regex.Pattern
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -417,5 +421,38 @@ class MongoQueryMapperTest {
     val keys = criteria.flatMap { it.keys }
     assertTrue(keys.contains("name"))
     assertFalse(keys.contains("age"))
+  }
+
+  // --- merging into a base query ---
+
+  @Test
+  fun `toQuery keeps base query modifiers and does not mutate base`() {
+    val base = Query(Criteria.where("tenant").`is`("t1")).with(Sort.by("name")).limit(10).skip(20)
+
+    val query = MongoQueryMapper.toQuery(EqStringFilter(name = "John"), base)
+
+    assertEquals("t1", query.queryObject["tenant"])
+    assertTrue(query.queryObject.containsKey("\$and"))
+    assertEquals(Document("name", 1), query.sortObject)
+    assertEquals(10, query.limit)
+    assertEquals(20L, query.skip)
+    assertFalse(base.queryObject.containsKey("\$and"))
+  }
+
+  @Test
+  fun `toQuery places required criteria first in and list`() {
+    val required = Criteria.where("tenant").`is`("t1")
+    val query = MongoQueryMapper.toQuery(EqStringFilter(name = "John"), required = required)
+
+    val and = query.queryObject.getList("\$and", Document::class.java)
+    assertEquals(listOf(Document("tenant", "t1"), Document("name", "John")), and)
+  }
+
+  @Test
+  fun `toMappedQuery extension delegates to the mapper`() {
+    val query = Query().limit(5).toMappedQuery(EqStringFilter(name = "John"))
+
+    assertEquals(listOf(Document("name", "John")), query.queryObject.getList("\$and", Document::class.java))
+    assertEquals(5, query.limit)
   }
 }
