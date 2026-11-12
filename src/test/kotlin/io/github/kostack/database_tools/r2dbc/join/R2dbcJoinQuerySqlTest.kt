@@ -191,4 +191,29 @@ class R2dbcJoinQuerySqlTest {
     operation.bindTo(target)
     assertEquals(listOf<Any?>("PAID", 60, 0L), target.values.values.toList())
   }
+
+  @Test
+  fun `ignoreCase renders LOWER for columns but not for aggregate aliases`() {
+    data class Row(
+      val id: Long,
+      val name: String,
+      @SelectAggregate(table = "s", function = Aggregate.MAX, name = "status") val lastStatus: String?
+    )
+
+    val statsSpec =
+      JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
+    val sort =
+      org.springframework.data.domain.Sort.by(
+        org.springframework.data.domain.Sort.Order
+          .asc("name")
+          .ignoreCase(),
+        org.springframework.data.domain.Sort.Order
+          .desc("lastStatus")
+          .ignoreCase()
+      )
+
+    val sql = joinQuery.prepare(statsSpec, null, Query.empty(), emptyMap(), Row::class, sort).toQuery()
+
+    assertEquals("ORDER BY LOWER(u.`name`) ASC, `last_status` DESC", sql.substringAfter(" FROM `join_user` u "))
+  }
 }

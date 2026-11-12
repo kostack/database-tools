@@ -4,8 +4,10 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
+import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.r2dbc.core.ReactiveSelectOperation
 import org.springframework.data.relational.core.query.Query
@@ -101,5 +103,15 @@ class R2dbcPaginatorTest {
       assertEquals(5, result.limit)
       assertEquals(50, result.offset)
       assertEquals(3L, result.total)
+    }
+
+  @Test
+  fun `rejects column projection with ignoreCase sorting`() =
+    runTest {
+      val pageable = PageRequest.of(0, 10, Sort.by(Sort.Order.asc("name").ignoreCase()))
+
+      assertThrows<IllegalArgumentException> {
+        paginator.toPagination(Query.empty().columns("name"), pageable, String::class)
+      }
     }
 }

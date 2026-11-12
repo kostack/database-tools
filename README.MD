@@ -196,6 +196,8 @@ GET /orders?status=OPEN&page=1&size=5
 
 The count query uses only the filter criteria (no `LIMIT`/`OFFSET`), ensuring an accurate total regardless of the requested page.
 
+**Case-insensitive sorting.** `ignoreCase()` orders (e.g. `sort=name,asc,ignorecase` or via `PageRequestMapper`) are sorted by `LOWER(column)`. Spring's `Query` rejects such orders, so these requests run through [`R2dbcJoinQuery`](#join-queries-r2dbc) with a single-table spec — same criteria mapping and entity conversion. In that case a column projection (`Query.columns(...)`) is not supported and `@Embedded` properties on the entity are rejected. Requests without `ignoreCase` use `R2dbcEntityTemplate` exactly as before.
+
 ---
 
 ## Query Mapper
@@ -440,7 +442,22 @@ joinQuery.select(spec, UserOrderRow::class, filter, required = mapOf("u" to Crit
 ```
 
 - Criteria per alias: `required[alias] AND (query criteria — root only) AND filter fields`; each part is parenthesised.
-- Sort properties are DTO property names (`orderId`) or `alias.column` (`o.total`); anything that isn't a plain identifier is rejected. Run client sorts through `PageRequestMapper` with `@Sortable` on the DTO to allowlist them.
+- Sort properties are DTO property names (`orderId`) or `alias.column` (`o.total`); anything that isn't a plain identifier is rejected.
+- `ignoreCase()` orders sort by `LOWER(column)` (ignored for aggregate properties). Spring's `Query.sort` rejects them, so pass such orders via the `sort` parameter of `select`, or through the `Pageable` of `toPagination`.
+
+**Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the DTO (or any class) and pass it as `sortableSource`. `field` may be a DTO property or `alias.column`:
+
+```kotlin
+@SortableDefaults(defaultSortField = "orderId", maxPageSize = 50)
+@Sortable(name = "orderId")
+@Sortable(name = "name")
+@Sortable(name = "total", field = "o.total")
+data class UserOrderRow(...)
+
+joinQuery.toPagination(spec, UserOrderRow::class, pageable, filter, sortableSource = UserOrderRow::class)
+```
+
+The `Pageable` then goes through `PageRequestMapper`: unknown sort fields throw `IllegalArgumentException`, the default sort applies when none is requested, and the page size is capped (the returned `Pagination.limit` reflects the cap). Without `sortableSource`, any DTO property or `alias.column` may be sorted on.
 - Everything is bound as parameters. Bind markers are generated in SQL text order, as MySQL's positional `?` requires.
 
 #### Aggregates

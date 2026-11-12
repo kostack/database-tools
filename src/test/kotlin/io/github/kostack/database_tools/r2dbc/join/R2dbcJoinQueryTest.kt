@@ -1,10 +1,13 @@
 package io.github.kostack.database_tools.r2dbc.join
 
+import io.github.kostack.database_tools.paginator.R2dbcPaginator
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.annotation.QueryField
 import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
+import io.github.kostack.database_tools.query_mapper.annotation.Sortable
+import io.github.kostack.database_tools.query_mapper.annotation.SortableDefaults
 import io.r2dbc.spi.ConnectionFactories
 import io.r2dbc.spi.ConnectionFactory
 import kotlinx.coroutines.flow.toList
@@ -16,6 +19,7 @@ import org.springframework.data.annotation.Id
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
+import org.springframework.data.relational.core.mapping.Embedded
 import org.springframework.data.relational.core.query.Criteria
 import org.springframework.data.relational.core.query.Query
 import org.springframework.r2dbc.core.await
@@ -25,6 +29,7 @@ import org.testcontainers.mysql.MySQLContainer
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 data class JoinUser(
   @Id val id: Long,
@@ -101,6 +106,16 @@ data class UsersWithoutOrdersFilter(
     operator = QueryOperator.IS_NULL,
     ignoreEmpty = false
   ) val maxTotal: Int? = null
+)
+
+@SortableDefaults(defaultSortField = "orderId", defaultSortDirection = Sort.Direction.ASC, maxPageSize = 2)
+@Sortable(name = "orderId")
+@Sortable(name = "name")
+@Sortable(name = "total", field = "o.total")
+data class SortableOrderRow(
+  val id: Long,
+  val name: String,
+  @SelectColumn(table = "o", name = "id") val orderId: Long
 )
 
 abstract class R2dbcJoinQueryContract {
@@ -493,6 +508,128 @@ abstract class R2dbcJoinQueryContract {
 
     assertEquals(listOf(1L, 1L, 0L), rows.map { it.orderCount })
     assertEquals(listOf(50L, 200L, null), rows.map { it.totalSum })
+  }
+
+  // --- sorting: sortableSource and ignoreCase ---
+
+  @Test
+  fun `sortableSource applies default sort and caps page size`() {
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 10),
+          sortableSource = SortableOrderRow::class
+        )
+      }
+
+    assertEquals(listOf(10L, 11L), page.content.map { it.orderId })
+    assertEquals(2, page.limit)
+    assertEquals(3L, page.total)
+  }
+
+  @Test
+  fun `sortableSource maps api names to alias columns`() {
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 2, Sort.by(Sort.Direction.DESC, "total")),
+          sortableSource = SortableOrderRow::class
+        )
+      }
+
+    assertEquals(listOf(12L, 10L), page.content.map { it.orderId })
+  }
+
+  @Test
+  fun `sortableSource rejects fields that are not allowlisted`() {
+    // "status" is a valid column, but not @Sortable on the DTO
+    assertThrows<IllegalArgumentException> {
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 2, Sort.by("o.status")),
+          sortableSource = SortableOrderRow::class
+        )
+      }
+    }
+  }
+
+  @Test
+  fun `ignoreCase sorts case-insensitively`() {
+    runBlocking { template.databaseClient.sql("INSERT INTO join_user VALUES (4, 'Zed')").await() }
+    val rootOnly = JoinSpec.from(JoinUser::class, "u")
+
+    val rows =
+      runBlocking {
+        joinQuery
+          .select(rootOnly, JoinUser::class, sort = Sort.by(Sort.Order.asc("name").ignoreCase()))
+          .toList()
+      }
+
+    assertEquals(listOf("alice", "bob", "carol", "Zed"), rows.map { it.name })
+  }
+
+  @Test
+  fun `ignoreCase passes through sortableSource`() {
+    runBlocking { template.databaseClient.sql("INSERT INTO join_order VALUES (13, 1, 'NEW', 1)").await() }
+    runBlocking { template.databaseClient.sql("INSERT INTO join_user VALUES (4, 'Zed')").await() }
+    runBlocking { template.databaseClient.sql("INSERT INTO join_order VALUES (14, 4, 'NEW', 1)").await() }
+
+    val page =
+      runBlocking {
+        joinQuery.toPagination(
+          spec,
+          SortableOrderRow::class,
+          PageRequest.of(0, 2, Sort.by(Sort.Order.desc("name").ignoreCase())),
+          sortableSource = SortableOrderRow::class
+        )
+      }
+
+    assertEquals("Zed", page.content.first().name)
+  }
+
+  // --- R2dbcPaginator ignoreCase (runs through the join query) ---
+
+  @Test
+  fun `paginator sorts ignoreCase and keeps query criteria`() {
+    runBlocking { template.databaseClient.sql("INSERT INTO join_user VALUES (4, 'Zed')").await() }
+    val paginator = R2dbcPaginator(template)
+
+    val page =
+      runBlocking {
+        paginator.toPagination(
+          Query.query(Criteria.where("name").not("bob")),
+          PageRequest.of(0, 2, Sort.by(Sort.Order.desc("name").ignoreCase())),
+          JoinUser::class
+        )
+      }
+
+    assertEquals(listOf("Zed", "carol"), page.content.map { it.name })
+    assertEquals(3L, page.total)
+    assertEquals(2, page.limit)
+  }
+
+  @Test
+  fun `rejects embedded properties`() {
+    data class Address(
+      val city: String?
+    )
+
+    data class WithEmbedded(
+      val id: Long,
+      @Embedded.Nullable val address: Address?
+    )
+
+    val failure =
+      assertThrows<IllegalArgumentException> {
+        runBlocking { joinQuery.select(JoinSpec.from(JoinUser::class, "u"), WithEmbedded::class).toList() }
+      }
+    assertTrue(failure.message!!.contains("@Embedded"), failure.message)
   }
 }
 

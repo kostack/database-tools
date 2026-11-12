@@ -2,6 +2,7 @@ package io.github.kostack.database_tools.r2dbc.join
 
 import io.github.kostack.database_tools.paginator.Pagination
 import io.github.kostack.database_tools.query_mapper.Aggregate
+import io.github.kostack.database_tools.query_mapper.PageRequestMapper
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.SqlQueryMapper
@@ -14,7 +15,9 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.data.core.TypeInformation
+import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
+import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.r2dbc.dialect.R2dbcDialect
 import org.springframework.data.relational.core.dialect.RenderContextFactory
@@ -62,20 +65,22 @@ class R2dbcJoinQuery(
   private val renderer by lazy { SqlRenderer.create(RenderContextFactory(dialect).createRenderContext()) }
 
   /**
-   * Selects [resultType] rows. Sort, limit and offset come from [query]; sort properties are
-   * DTO property names or `alias.column`.
+   * Selects [resultType] rows. Limit and offset come from [query]; ordering is `query.sort` followed by [sort].
+   * Sort properties are DTO property names or `alias.column`.
    *
    * @param required extra criteria keyed by table alias, placed first for that alias.
+   * @param sort extra ordering; unlike `Query.sort` it may contain `ignoreCase()` orders (rendered as `LOWER(column)`).
    */
   fun <T : Any> select(
     spec: JoinSpec,
     resultType: KClass<T>,
     filter: Any? = null,
     query: Query = Query.empty(),
-    required: Map<String, CriteriaDefinition> = emptyMap()
+    required: Map<String, CriteriaDefinition> = emptyMap(),
+    sort: Sort = Sort.unsorted()
   ): Flow<T> =
     template
-      .query(prepare(spec, filter, query, required, resultType), resultType.java)
+      .query(prepare(spec, filter, query, required, resultType, sort), resultType.java)
       .all()
       .asFlow()
 
@@ -92,22 +97,34 @@ class R2dbcJoinQuery(
       .one()
       .awaitSingle()
 
+  /**
+   * Selects one page plus the total count.
+   *
+   * @param sortableSource when set, [pageable] first goes through [PageRequestMapper] with this class's
+   *   `@Sortable` / `@SortableDefaults`: unknown sort fields are rejected, API names are mapped to their
+   *   `field` (a DTO property or `alias.column`), the default sort applies and the page size is capped.
+   *   Without it, any DTO property or `alias.column` may be sorted on.
+   */
   suspend fun <T : Any> toPagination(
     spec: JoinSpec,
     resultType: KClass<T>,
     pageable: Pageable,
     filter: Any? = null,
     query: Query = Query.empty(),
-    required: Map<String, CriteriaDefinition> = emptyMap()
+    required: Map<String, CriteriaDefinition> = emptyMap(),
+    sortableSource: KClass<*>? = null
   ): Pagination<T> =
     coroutineScope {
-      val items = async { select(spec, resultType, filter, query.with(pageable), required).toList() }
+      val page = sortableSource?.let { PageRequestMapper.toPageRequest(pageable, it) } ?: pageable
+      // Paging goes into the query; the sort is passed separately because Spring's Query rejects ignoreCase orders.
+      val paged = query.with(PageRequest.of(page.pageNumber, page.pageSize))
+      val items = async { select(spec, resultType, filter, paged, required, page.sort).toList() }
       val total = async { count(spec, filter, query, required) }
 
       Pagination(
         content = items.await(),
-        limit = pageable.pageSize,
-        offset = pageable.offset,
+        limit = page.pageSize,
+        offset = page.offset,
         total = total.await()
       )
     }
@@ -118,8 +135,9 @@ class R2dbcJoinQuery(
     filter: Any?,
     query: Query,
     required: Map<String, CriteriaDefinition>,
-    resultType: KClass<*>?
-  ): PreparedOperation<Select> = Statement(spec, resultType).build(filter, query, required)
+    resultType: KClass<*>?,
+    sort: Sort = Sort.unsorted()
+  ): PreparedOperation<Select> = Statement(spec, resultType).build(filter, query, required, query.sort.and(sort))
 
   private inner class Statement(
     private val spec: JoinSpec,
@@ -147,7 +165,8 @@ class R2dbcJoinQuery(
     fun build(
       filter: Any?,
       query: Query,
-      required: Map<String, CriteriaDefinition>
+      required: Map<String, CriteriaDefinition>,
+      sort: Sort
     ): PreparedOperation<Select> {
       val fields = filter?.let { SqlQueryMapper.activeFields(it) }.orEmpty()
       val aliasOf = { field: MappedField -> field.field.table.ifEmpty { spec.rootAlias } }
@@ -195,7 +214,7 @@ class R2dbcJoinQuery(
         }
 
       val filtered: SelectBuilder.SelectOrdered = where?.let { paged.where(it) } ?: paged
-      val ordered = if (resultType != null && query.isSorted) filtered.orderBy(orderBy(query)) else filtered
+      val ordered = if (resultType != null && sort.isSorted) filtered.orderBy(orderBy(sort)) else filtered
       val select = ordered.build()
 
       return JoinOperation(select, renderer.render(select), bindings)
@@ -349,10 +368,17 @@ class R2dbcJoinQuery(
       criteria: CriteriaDefinition?
     ): Criteria? = SqlQueryMapper.combine(listOfNotNull(spec.onCriteriaOf(alias), criteria))
 
-    private fun orderBy(query: Query): List<OrderByField> =
-      query.sort
-        .map { order -> OrderByField.from(sortable[order.property] ?: reference(order.property), order.direction) }
-        .toList()
+    /**
+     * DTO property or `alias.column`. `ignoreCase` sorts by `LOWER(column)`; it is ignored for aggregate
+     * properties, which are sorted by their select alias (not allowed inside a function on every database).
+     */
+    private fun orderBy(sort: Sort): List<OrderByField> =
+      sort
+        .map { order ->
+          val expression = sortable[order.property] ?: reference(order.property)
+          val sortKey = if (order.isIgnoreCase && expression is Column) Functions.lower(expression) else expression
+          OrderByField.from(sortKey, order.direction)
+        }.toList()
 
     private fun selectList(type: KClass<*>): List<Expression> {
       val dto = entityOf(type)
@@ -360,6 +386,7 @@ class R2dbcJoinQuery(
 
       dto.forEach { property ->
         val owner = "${type.simpleName}.${property.name}"
+        require(!property.isEmbedded) { "$owner is @Embedded, which join queries do not support" }
         val selectColumn = property.findAnnotation(SelectColumn::class.java)
         val selectAggregate = property.findAnnotation(SelectAggregate::class.java)
         require(
