@@ -133,8 +133,7 @@ internal class JoinQueryEngine(
     private val spec: JoinSpec,
     private val resultType: KClass<*>?
   ) {
-    private val types: Map<String, KClass<*>> =
-      (listOf(spec.rootAlias to spec.root) + spec.joins.map { it.alias to it.entity }).toMap()
+    private val types: Map<String, KClass<*>> = spec.tables.mapValues { (_, table) -> table.type }
 
     private val entities: Map<String, RelationalPersistentEntity<*>> =
       types.mapValues { (_, type) ->
@@ -221,8 +220,11 @@ internal class JoinQueryEngine(
       alias: String,
       condition: Condition
     ): Condition {
-      val (left, right) = spec.joins.single { it.alias == alias }.on
-      return reference(left).`in`(DSL.select(column(alias, right)).from(tables.getValue(alias)).where(condition))
+      val join = spec.joinOf(alias)!!
+      return joins
+        .column(
+          join.parentKey
+        ).`in`(DSL.select(joins.column(join.key)).from(tables.getValue(alias)).where(condition))
     }
 
     /** `(SELECT FN(arg) FROM t a WHERE (<criteria of a>) AND <correlation to the outer row>)`. */
@@ -240,7 +242,7 @@ internal class JoinQueryEngine(
       }
       require(name.isNotEmpty() || function == Aggregate.COUNT) { "$owner: $function needs a column name" }
 
-      val join = spec.joins.single { it.alias == alias }
+      val join = spec.joinOf(alias)!!
       val argument = name.ifEmpty { null }?.let { column(alias, it) }
       val call: Field<*> =
         when (function) {
@@ -253,7 +255,7 @@ internal class JoinQueryEngine(
         }
 
       val scope = withOnCondition(alias, conditionsByAlias[alias])
-      val correlation = column(alias, join.on.second).eq(reference(join.on.first))
+      val correlation = joins.column(join.key).eq(joins.column(join.parentKey))
 
       return DSL.field(DSL.select(call.any()).from(tables.getValue(alias)).where(listOfNotNull(scope, correlation)))
     }
@@ -274,14 +276,15 @@ internal class JoinQueryEngine(
     }
 
     /** A join's `onCondition` mapped through its entity; the column pairs are rendered by [JooqJoinRenderer]. */
-    private fun onCondition(join: JoinSpec.Join): Condition? = join.onCondition?.let { condition(join.alias, it.node) }
+    private fun onCondition(join: JoinSpec.Join): Condition? =
+      join.condition?.let { condition(join.table.alias, it.node) }
 
     /** `onCondition AND condition` for a subquery alias; `null` when both are absent. */
     private fun withOnCondition(
       alias: String,
       condition: Condition?
     ): Condition? =
-      listOfNotNull(spec.joins.single { it.alias == alias }.let(::onCondition), condition)
+      listOfNotNull(spec.joinOf(alias)?.let(::onCondition), condition)
         .takeIf { it.isNotEmpty() }
         ?.let(::allOf)
 
@@ -371,7 +374,7 @@ internal class JoinQueryEngine(
     private fun reference(qualified: String): Field<Any?> {
       val alias = qualified.substringBefore('.', spec.rootAlias)
       require(alias in entities) { "Unknown table alias '$alias' in '$qualified'; declared: ${spec.aliases()}" }
-      return joins.reference(spec, qualified)
+      return column(alias, qualified.substringAfter('.'))
     }
 
     /** Entity property name -> its column; otherwise [fallback] or [name] as a raw (validated) column. */

@@ -14,22 +14,31 @@ import kotlin.test.assertEquals
 
 /** Renders with the MySQL dialect (positional `?` markers) without a database. */
 class R2dbcJoinQuerySqlTest {
-  private val joinQuery =
-    JoinQueryEngine(
-      R2dbcEntityTemplate(
-        DatabaseClient.create(ConnectionFactories.get("r2dbc:h2:mem:///unused")),
-        MySqlDialect.INSTANCE
-      )
-    )
+  private val template =
+    R2dbcEntityTemplate(DatabaseClient.create(ConnectionFactories.get("r2dbc:h2:mem:///unused")), MySqlDialect.INSTANCE)
+  private val joinQuery = JoinQueryEngine(template)
+  private val queryBuilder = R2dbcQueryBuilder(template)
 
   private val user = table<JoinUser>("u")
   private val order = table<JoinOrder>("o")
+  private val item = table<JoinItem>("i")
+  private val stats = table<JoinOrder>("s")
 
   private val spec =
-    JoinSpec
-      .from(JoinUser::class, "u")
-      .join(JoinOrder::class, "o", "u.id" to "userId")
-      .join(JoinItem::class, "i", "o.id" to "order_id", mode = JoinMode.EXISTS)
+    queryBuilder
+      .from(user)
+      .join(order)
+      .on(user[JoinUser::id] eq order[JoinOrder::userId])
+      .existsJoin(item)
+      .on(order[JoinOrder::id] eq item[JoinItem::orderId])
+      .spec
+
+  private val statsSpec =
+    queryBuilder
+      .from(user)
+      .aggregateJoin(stats)
+      .on(user[JoinUser::id] eq stats[JoinOrder::userId])
+      .spec
 
   private class RecordingTarget : BindTarget {
     val values = sortedMapOf<Int, Any?>()
@@ -77,7 +86,7 @@ class R2dbcJoinQuerySqlTest {
         "o.`id` AS `order_id`, o.`status` AS `status`, o.`total` AS `order_total` " +
         "FROM `join_user` AS u JOIN `join_order` AS o ON u.`id` = o.`user_id` " +
         "WHERE (u.`id` > ? AND u.`name` LIKE ? AND o.`total` > ? AND o.`status` = ? " +
-        "AND o.`id` IN (SELECT i.order_id FROM `join_item` AS i WHERE i.`sku` = ?)) " +
+        "AND o.`id` IN (SELECT i.`order_id` FROM `join_item` AS i WHERE i.`sku` = ?)) " +
         "ORDER BY o.`id` ASC LIMIT 5 OFFSET 10",
       operation.toQuery()
     )
@@ -111,9 +120,6 @@ class R2dbcJoinQuerySqlTest {
       @SelectAggregate(table = "s", function = Aggregate.COUNT) val orderCount: Long,
       @SelectAggregate(table = "s", function = Aggregate.AVG, name = "total") val avgTotal: Double?
     )
-
-    val statsSpec =
-      JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
 
     val operation =
       joinQuery.prepare(
@@ -150,21 +156,13 @@ class R2dbcJoinQuerySqlTest {
     )
 
     val onSpec =
-      JoinSpec
-        .from(JoinUser::class, "u")
-        .join(
-          JoinOrder::class,
-          "o",
-          "u.id" to "userId",
-          mode = JoinMode.LEFT,
-          onCondition = order[JoinOrder::total] gt 60
-        ).join(
-          JoinOrder::class,
-          "s",
-          "u.id" to "userId",
-          mode = JoinMode.AGGREGATE,
-          onCondition = table<JoinOrder>("s")[JoinOrder::status] eq "PAID"
-        )
+      queryBuilder
+        .from(user)
+        .leftJoin(order)
+        .on(user[JoinUser::id] eq order[JoinOrder::userId], and = order[JoinOrder::total] gt 60)
+        .aggregateJoin(stats)
+        .on(user[JoinUser::id] eq stats[JoinOrder::userId], and = stats[JoinOrder::status] eq "PAID")
+        .spec
 
     val operation =
       joinQuery.prepare(onSpec, null, listOf(user[JoinUser::id] gt 0L), Row::class)
@@ -190,8 +188,6 @@ class R2dbcJoinQuerySqlTest {
       @SelectAggregate(table = "s", function = Aggregate.MAX, name = "status") val lastStatus: String?
     )
 
-    val statsSpec =
-      JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
     val sort =
       Sort.by(
         Sort.Order

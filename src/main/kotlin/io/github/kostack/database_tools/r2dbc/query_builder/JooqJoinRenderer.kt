@@ -7,7 +7,6 @@ import org.jooq.Record
 import org.jooq.SelectFieldOrAsterisk
 import org.jooq.SelectJoinStep
 import org.jooq.Table
-import kotlin.reflect.KClass
 
 /**
  * Renders the `FROM` clause of a [JoinSpec] with jOOQ: the root table plus its `INNER` / `LEFT` joins.
@@ -35,39 +34,14 @@ internal class JooqJoinRenderer(
   ): Table<*> =
     spec.joins
       .filter { it.mode.joined }
-      .fold(metadata.table(spec.root, spec.rootAlias)) { from, join ->
-        val table = metadata.table(join.entity, join.alias)
-        val (left, right) = join.on
-        val keys = reference(spec, left).eq(field(spec, join.alias, right))
+      .fold(metadata.table(spec.root.type, spec.root.alias)) { from, join ->
+        val table = metadata.table(join.table.type, join.table.alias)
+        val keys = column(join.parentKey).eq(column(join.key))
         val on = onCondition(join)?.let { keys.and(it) } ?: keys
         if (join.mode == JoinMode.LEFT) from.leftOuterJoin(table).on(on) else from.join(table).on(on)
       }
 
-  /** `alias.name`, or a bare `name` of the root table. */
-  fun reference(
-    spec: JoinSpec,
-    qualified: String
-  ): Field<Any?> {
-    val alias = qualified.substringBefore('.', spec.rootAlias)
-    return field(spec, alias, qualified.substringAfter('.'))
-  }
-
-  /** Column [name] (entity property or raw column) of the table declared as [alias]. */
-  fun field(
-    spec: JoinSpec,
-    alias: String,
-    name: String
-  ): Field<Any?> = metadata.field(typeOf(spec, alias), alias, name)
-
-  private fun typeOf(
-    spec: JoinSpec,
-    alias: String
-  ): KClass<*> =
-    if (alias == spec.rootAlias) {
-      spec.root
-    } else {
-      requireNotNull(spec.joins.firstOrNull { it.alias == alias }?.entity) {
-        "Unknown table alias '$alias'; declared: ${spec.aliases()}"
-      }
-    }
+  /** The jOOQ field of an entity column. */
+  fun column(column: EntityColumn<*, *>): Field<Any?> =
+    metadata.field(column.table.type, column.table.alias, column.property.name)
 }

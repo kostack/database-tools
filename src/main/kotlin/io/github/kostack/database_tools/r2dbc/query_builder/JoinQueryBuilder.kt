@@ -92,27 +92,31 @@ class JoinQueryBuilder internal constructor(
       require(and == null || and.table.alias == table.alias) {
         "The extra ON condition of '${table.alias}' must use its own columns, not '${and?.table?.alias}'"
       }
-      val (left, right) =
+      val (parentKey, key) =
         when (table.alias) {
           condition.right.table.alias -> condition.left to condition.right
           condition.left.table.alias -> condition.right to condition.left
           else -> throw IllegalArgumentException("ON of '${table.alias}' must use one of its columns: $condition")
         }
-      require(left.table.alias != table.alias) { "ON of '${table.alias}' compares two of its own columns: $condition" }
-      requireDeclared(left.table)
+      require(parentKey.table.alias != table.alias) {
+        "ON of '${table.alias}' compares two of its own columns: $condition"
+      }
+      requireDeclared(parentKey.table)
+      val parentMode = spec.modeOf(parentKey.table.alias)
+      require(parentMode?.joined != false) {
+        "ON of '${table.alias}' cannot use $parentMode table '${parentKey.table.alias}'; only the root, join and leftJoin tables"
+      }
 
-      val on = left.path to right.property.name
-      val joined = spec.join(table.type, table.alias, on, mode = mode, onCondition = and)
+      val joined = spec.join(JoinSpec.Join(table, mode, parentKey, key, and))
       return JoinQueryBuilder(joinQuery, joined, required)
     }
   }
 
   private fun requireDeclared(table: EntityTable<*>) {
-    val declared =
-      if (table.alias == spec.rootAlias) spec.root else spec.joins.firstOrNull { it.alias == table.alias }?.entity
+    val declared = spec.tables[table.alias]
     require(declared != null) { "Table '${table.alias}' is not declared; declared: ${spec.aliases()}" }
-    require(declared == table.type) {
-      "Alias '${table.alias}' is declared as ${declared.simpleName}, not ${table.type.simpleName}"
+    require(declared.type == table.type) {
+      "Alias '${table.alias}' is declared as ${declared.type.simpleName}, not ${table.type.simpleName}"
     }
   }
 }

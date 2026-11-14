@@ -21,6 +21,5 @@ class R2dbcQueryBuilder(
 ) {
   private val joinQuery = JoinQueryEngine(template)
 
-  fun from(table: EntityTable<*>): JoinQueryBuilder =
-    JoinQueryBuilder(joinQuery, JoinSpec.from(table.type, table.alias), emptyList())
+  fun from(table: EntityTable<*>): JoinQueryBuilder = JoinQueryBuilder(joinQuery, JoinSpec.from(table), emptyList())
 }
