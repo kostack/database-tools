@@ -1,0 +1,24 @@
+package io.github.kostack.database_tools.r2dbc.query_builder
+
+import kotlin.reflect.KClass
+import kotlin.reflect.KProperty1
+
+/**
+ * An entity table under an alias. The alias is what `@QueryField(table = …)` and `@SelectColumn(table = …)` refer to.
+ *
+ * ```kotlin
+ * val customer = table<Customer>("c")
+ * customer[Customer::id]   // column c.id
+ * ```
+ */
+class EntityTable<E : Any>(
+  val type: KClass<E>,
+  val alias: String
+) {
+  operator fun <V> get(property: KProperty1<E, V>): EntityColumn<E, V & Any> = EntityColumn(this, property)
+
+  override fun toString(): String = "${type.simpleName} $alias"
+}
+
+/** Declares [E]'s table under [alias]. */
+inline fun <reified E : Any> table(alias: String): EntityTable<E> = EntityTable(E::class, alias)

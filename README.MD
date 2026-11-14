@@ -438,9 +438,9 @@ val query = queryBuilder
 | Expression | Meaning |
 |---|---|
 | `table<Order>("o")` | the `Order` entity's table under alias `o` |
-| `order[Order::total]` | column `o.total`, resolved through the entity mapping |
+| `order[Order::total]` | column `o.total`, resolved through the entity mapping; typed by the property type without nullability (`Long?` → `Long`) |
 | `order[Order::total].path` | `"o.total"`, e.g. for `Sort.by(order[Order::total].path)` |
-| `a eq b` | the ON key equality, one per join; both sides must have the same type (`Long` vs `Long?` is allowed) |
+| `a eq b` | the ON key equality, one per join; both sides must have the same type, so a nullable foreign key (`Order::customerId: Long?`) joins a `Long` id, while `Long` vs `String` does not compile |
 
 | Builder | SQL | Columns selectable | Notes |
 |---|---|---|---|
@@ -451,7 +451,7 @@ val query = queryBuilder
 
 The same entity can be joined twice under different aliases (e.g. `table<Order>("o")` and `table<Order>("s")`).
 
-**Conditions.** Fixed conditions are written with the same typed columns. The value must have the column's type:
+**Conditions.** Fixed conditions are written with the same typed columns. The value must have the column's type and is never `null`; use `isNull()` / `isNotNull()` to test for `NULL`, also on nullable columns:
 
 | Expression | SQL |
 |---|---|

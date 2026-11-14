@@ -7,7 +7,6 @@ import org.jooq.Record
 import org.jooq.SelectFieldOrAsterisk
 import org.jooq.SelectJoinStep
 import org.jooq.Table
-import org.jooq.impl.DSL
 import kotlin.reflect.KClass
 
 /**
