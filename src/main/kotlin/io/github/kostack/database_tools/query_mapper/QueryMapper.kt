@@ -6,7 +6,6 @@ import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaField
 
 abstract class QueryMapper<C> {
-  /** An active (not skipped) `@QueryField` property of a filter object. */
   data class MappedField(
     val fieldName: String,
     val propertyName: String,
@@ -14,10 +13,6 @@ abstract class QueryMapper<C> {
     val field: QueryField
   )
 
-  /**
-   * Maps the `@QueryField` properties of [source] for a single-table query.
-   * Fails if any field targets a joined table ([QueryField.table]) or an aggregate ([QueryField.aggregate]).
-   */
   fun toCriteriaList(source: Any): List<C> =
     toTableCriteriaList(source).map { (table, criteria) ->
       require(table.isEmpty()) {
@@ -26,10 +21,6 @@ abstract class QueryMapper<C> {
       criteria
     }
 
-  /**
-   * Maps the `@QueryField` properties of [source] as (table alias, criteria) pairs; root fields have an empty alias.
-   * Fails on aggregate fields, which cannot be expressed as criteria.
-   */
   fun toTableCriteriaList(source: Any): List<Pair<String, C>> =
     activeFields(source).map { mapped ->
       require(mapped.field.aggregate == Aggregate.NONE) {
@@ -39,26 +30,7 @@ abstract class QueryMapper<C> {
     }
 
   /** The `@QueryField` properties of [source] that are not skipped (see [QueryField.ignoreEmpty]). */
-  fun activeFields(source: Any): List<MappedField> =
-    source::class.memberProperties.mapNotNull { property ->
-      val field =
-        property.javaField?.getAnnotation(QueryField::class.java)
-          ?: return@mapNotNull null
-
-      @Suppress("UNCHECKED_CAST")
-      val value = (property as KProperty1<Any, *>).get(source)
-
-      if (shouldSkip(value, field)) {
-        return@mapNotNull null
-      }
-
-      MappedField(
-        fieldName = field.name.ifBlank { property.name },
-        propertyName = property.name,
-        value = value,
-        field = field
-      )
-    }
+  fun activeFields(source: Any): List<MappedField> = Companion.activeFields(source)
 
   fun toCriteria(mapped: MappedField): C =
     buildCriteria(
@@ -78,21 +50,7 @@ abstract class QueryMapper<C> {
   protected fun shouldSkip(
     value: Any?,
     field: QueryField
-  ): Boolean {
-    if ((value == null || (value is String && value.isBlank())) && field.ignoreEmpty) {
-      return true
-    }
-
-    if (
-      value is Collection<*> &&
-      value.isEmpty() &&
-      field.operator in listOf(QueryOperator.IN, QueryOperator.NOT_IN)
-    ) {
-      return true
-    }
-
-    return false
-  }
+  ): Boolean = Companion.shouldSkip(value, field)
 
   protected fun requireString(
     value: Any?,
@@ -116,5 +74,45 @@ abstract class QueryMapper<C> {
     }
 
     return value
+  }
+
+  companion object {
+    /**
+     * The `@QueryField` properties of [source] that are not skipped (see [QueryField.ignoreEmpty]),
+     * independent of the target query type (used by the Mongo mapper and by `R2dbcQueryBuilder`).
+     */
+    fun activeFields(source: Any): List<MappedField> =
+      source::class.memberProperties.mapNotNull { property ->
+        val field =
+          property.javaField?.getAnnotation(QueryField::class.java)
+            ?: return@mapNotNull null
+
+        @Suppress("UNCHECKED_CAST")
+        val value = (property as KProperty1<Any, *>).get(source)
+
+        if (shouldSkip(value, field)) {
+          return@mapNotNull null
+        }
+
+        MappedField(
+          fieldName = field.name.ifBlank { property.name },
+          propertyName = property.name,
+          value = value,
+          field = field
+        )
+      }
+
+    internal fun shouldSkip(
+      value: Any?,
+      field: QueryField
+    ): Boolean {
+      if ((value == null || (value is String && value.isBlank())) && field.ignoreEmpty) {
+        return true
+      }
+
+      return value is Collection<*> &&
+        value.isEmpty() &&
+        field.operator in listOf(QueryOperator.IN, QueryOperator.NOT_IN)
+    }
   }
 }

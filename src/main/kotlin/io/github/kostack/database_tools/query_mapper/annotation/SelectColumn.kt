@@ -10,7 +10,7 @@ package io.github.kostack.database_tools.query_mapper.annotation
 @Target(AnnotationTarget.FIELD)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class SelectColumn(
-  /** Table alias declared in the `JoinSpec`. Empty = root table. */
+  /** Table alias declared with `table<Entity>("alias")` in `R2dbcQueryBuilder`. Empty = root table. */
   val table: String = "",
   /** Entity property or column name in that table. Empty = the DTO property name. */
   val name: String = ""

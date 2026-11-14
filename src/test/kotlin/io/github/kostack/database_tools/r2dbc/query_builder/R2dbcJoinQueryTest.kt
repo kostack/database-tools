@@ -1,6 +1,5 @@
-package io.github.kostack.database_tools.r2dbc.join
+package io.github.kostack.database_tools.r2dbc.query_builder
 
-import io.github.kostack.database_tools.paginator.R2dbcPaginator
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.annotation.QueryField
@@ -12,7 +11,9 @@ import io.github.kostack.database_tools.query_mapper.extension.toPageRequest
 import io.r2dbc.spi.ConnectionFactories
 import io.r2dbc.spi.ConnectionFactory
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.runBlocking
+import org.jooq.impl.DSL
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -128,7 +129,7 @@ abstract class R2dbcJoinQueryContract {
   abstract val connectionFactory: ConnectionFactory
 
   private val template by lazy { R2dbcEntityTemplate(connectionFactory) }
-  private val joinQuery by lazy { R2dbcJoinQuery(template) }
+  private val joinQuery by lazy { JoinQueryEngine(template) }
 
   // ON uses an entity property (userId -> user_id) and a raw column (order_id).
   private val spec =
@@ -595,27 +596,6 @@ abstract class R2dbcJoinQueryContract {
     assertEquals("Zed", page.content.first().name)
   }
 
-  // --- R2dbcPaginator ignoreCase (runs through the join query) ---
-
-  @Test
-  fun `paginator sorts ignoreCase and keeps query criteria`() {
-    runBlocking { template.databaseClient.sql("INSERT INTO join_user VALUES (4, 'Zed')").await() }
-    val paginator = R2dbcPaginator(template)
-
-    val page =
-      runBlocking {
-        paginator.toPagination(
-          Query.query(Criteria.where("name").not("bob")),
-          PageRequest.of(0, 2, Sort.by(Sort.Order.desc("name").ignoreCase())),
-          JoinUser::class
-        )
-      }
-
-    assertEquals(listOf("Zed", "carol"), page.content.map { it.name })
-    assertEquals(3L, page.total)
-    assertEquals(2, page.limit)
-  }
-
   @Test
   fun `rejects embedded properties`() {
     data class Address(
@@ -634,7 +614,7 @@ abstract class R2dbcJoinQueryContract {
     assertTrue(failure.message!!.contains("@Embedded"), failure.message)
   }
 
-  private val queryBuilder by lazy { R2dbcQueryBuilder(joinQuery) }
+  private val queryBuilder by lazy { R2dbcQueryBuilder(template) }
   private val user = table<JoinUser>("u")
   private val order = table<JoinOrder>("o")
   private val item = table<JoinItem>("i")
@@ -695,6 +675,36 @@ abstract class R2dbcJoinQueryContract {
         queryBuilder.from(user).join(order).on(user[JoinUser::id] eq other[JoinOrder::userId])
       }
     assertTrue(failure.message!!.contains("must use one of its columns"), failure.message)
+  }
+
+  @Test
+  fun `query builder select builds a plain jOOQ query for the database`() {
+    val query =
+      queryBuilder
+        .from(user)
+        .join(order)
+        .on(user[JoinUser::id] eq order[JoinOrder::userId])
+        .where(order, Criteria.where("status").`is`("PAID"))
+    val name = query.field(user[JoinUser::name])
+    val select = query.select(name, DSL.count().`as`("orders")).groupBy(name).orderBy(name)
+
+    val rows =
+      runBlocking {
+        select.bindValues
+          .foldIndexed(template.databaseClient.sql(select.sql)) { index, sql, value -> sql.bind(index, value!!) }
+          .map { row -> row.get(0, String::class.java)!! to (row.get(1) as Number).toLong() }
+          .all()
+          .asFlow()
+          .toList()
+      }
+
+    assertEquals(listOf("alice" to 1L, "bob" to 1L), rows)
+  }
+
+  @Test
+  fun `query builder select rejects subquery joins`() {
+    val query = queryBuilder.from(user).existsJoin(item).on(user[JoinUser::id] eq item[JoinItem::orderId])
+    assertThrows<IllegalArgumentException> { query.select(DSL.count()) }
   }
 
   @Test

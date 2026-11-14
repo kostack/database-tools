@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.join
+package io.github.kostack.database_tools.r2dbc.query_builder
 
 import org.jooq.Condition
 import org.jooq.DSLContext
@@ -14,7 +14,7 @@ import kotlin.reflect.KClass
  * Renders the `FROM` clause of a [JoinSpec] with jOOQ: the root table plus its `INNER` / `LEFT` joins.
  * `EXISTS` and `AGGREGATE` aliases are never joined as rows; they become subqueries elsewhere.
  */
-class JooqJoinRenderer(
+internal class JooqJoinRenderer(
   private val dsl: DSLContext,
   private val metadata: JooqMetadataResolver
 ) {

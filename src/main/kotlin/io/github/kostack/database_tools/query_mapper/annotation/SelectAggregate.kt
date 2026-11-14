@@ -13,7 +13,7 @@ import io.github.kostack.database_tools.query_mapper.Aggregate
 @Target(AnnotationTarget.FIELD)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class SelectAggregate(
-  /** A `JoinMode.AGGREGATE` alias declared in the `JoinSpec`. */
+  /** Alias of a table joined with `aggregateJoin(...)` (`JoinMode.AGGREGATE`). */
   val table: String,
   val function: Aggregate,
   /** Entity property or column to aggregate. Empty only for `COUNT` (counts rows). */

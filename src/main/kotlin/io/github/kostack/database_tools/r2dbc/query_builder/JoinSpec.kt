@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.join
+package io.github.kostack.database_tools.r2dbc.query_builder
 
 import org.springframework.data.relational.core.query.CriteriaDefinition
 import kotlin.reflect.KClass
@@ -30,6 +30,7 @@ enum class JoinMode {
 
 /**
  * Immutable description of a root table and the tables joined to it.
+ * Internal model behind [R2dbcQueryBuilder], which is the public way to declare joins.
  *
  * ```kotlin
  * val spec = JoinSpec.from(User::class, "u")
@@ -52,7 +53,7 @@ enum class JoinMode {
  * // LEFT OUTER JOIN orders o ON u.id = o.user_id AND (o.status = ?)
  * ```
  */
-class JoinSpec private constructor(
+internal class JoinSpec private constructor(
   val root: KClass<*>,
   val rootAlias: String,
   val joins: List<Join>

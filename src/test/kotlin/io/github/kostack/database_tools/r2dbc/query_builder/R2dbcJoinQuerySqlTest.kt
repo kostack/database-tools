@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.join
+package io.github.kostack.database_tools.r2dbc.query_builder
 
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
@@ -16,7 +16,7 @@ import kotlin.test.assertEquals
 /** Renders with the MySQL dialect (positional `?` markers) without a database. */
 class R2dbcJoinQuerySqlTest {
   private val joinQuery =
-    R2dbcJoinQuery(
+    JoinQueryEngine(
       R2dbcEntityTemplate(
         DatabaseClient.create(ConnectionFactories.get("r2dbc:h2:mem:///unused")),
         MySqlDialect.INSTANCE

@@ -83,17 +83,17 @@ class JooqConditionMapper(
 
       QueryOperator.LTE -> left.le(value())
 
-      QueryOperator.CONTAINS -> like(SqlQueryMapper::containsPattern)
+      QueryOperator.CONTAINS -> like(::containsPattern)
 
-      QueryOperator.CONTAINS_IGNORE_CASE -> like(SqlQueryMapper::containsPattern, ignoreCase = true)
+      QueryOperator.CONTAINS_IGNORE_CASE -> like(::containsPattern, ignoreCase = true)
 
-      QueryOperator.STARTS_WITH -> like(SqlQueryMapper::startsWithPattern)
+      QueryOperator.STARTS_WITH -> like(::startsWithPattern)
 
-      QueryOperator.STARTS_WITH_IGNORE_CASE -> like(SqlQueryMapper::startsWithPattern, ignoreCase = true)
+      QueryOperator.STARTS_WITH_IGNORE_CASE -> like(::startsWithPattern, ignoreCase = true)
 
-      QueryOperator.ENDS_WITH -> like(SqlQueryMapper::endsWithPattern)
+      QueryOperator.ENDS_WITH -> like(::endsWithPattern)
 
-      QueryOperator.ENDS_WITH_IGNORE_CASE -> like(SqlQueryMapper::endsWithPattern, ignoreCase = true)
+      QueryOperator.ENDS_WITH_IGNORE_CASE -> like(::endsWithPattern, ignoreCase = true)
 
       QueryOperator.IN -> left.`in`(values())
 
@@ -215,6 +215,19 @@ class JooqConditionMapper(
   ): Any? = value?.let { converter.writeValue(it, type ?: TypeInformation.of(it.javaClass)) ?: it }
 
   private companion object {
+    /** Escapes LIKE wildcards; backslash is the default escape character of MySQL, H2 and PostgreSQL. */
+    fun escapeLike(value: String): String =
+      value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+
+    fun containsPattern(value: String): String = "%${escapeLike(value)}%"
+
+    fun startsWithPattern(value: String): String = "${escapeLike(value)}%"
+
+    fun endsWithPattern(value: String): String = "%${escapeLike(value)}"
+
     fun param(value: Any?): Field<Any?> = DSL.value(value).any()
 
     @Suppress("UNCHECKED_CAST")

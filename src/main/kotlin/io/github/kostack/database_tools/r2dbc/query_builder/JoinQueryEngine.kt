@@ -1,11 +1,11 @@
-package io.github.kostack.database_tools.r2dbc.join
+package io.github.kostack.database_tools.r2dbc.query_builder
 
 import io.github.kostack.database_tools.paginator.Pagination
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.JooqConditionMapper
+import io.github.kostack.database_tools.query_mapper.QueryMapper
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
 import io.github.kostack.database_tools.query_mapper.QueryOperator
-import io.github.kostack.database_tools.query_mapper.SqlQueryMapper
 import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import kotlinx.coroutines.async
@@ -17,9 +17,12 @@ import kotlinx.coroutines.reactor.awaitSingle
 import org.jooq.Condition
 import org.jooq.DSLContext
 import org.jooq.Field
+import org.jooq.Record
 import org.jooq.SQLDialect
 import org.jooq.Select
+import org.jooq.SelectConditionStep
 import org.jooq.SelectField
+import org.jooq.SelectFieldOrAsterisk
 import org.jooq.SortField
 import org.jooq.Table
 import org.jooq.conf.ParamType
@@ -44,14 +47,15 @@ import org.springframework.r2dbc.core.binding.BindTarget
 import kotlin.reflect.KClass
 
 /**
- * Runs `@QueryField` filters against a root table plus joined tables (see [JoinSpec])
- * and maps each row into a DTO whose properties are placed with [SelectColumn].
+ * Internal engine behind [R2dbcQueryBuilder]: runs `@QueryField`
+ * filters against a root table plus joined tables (see [JoinSpec]) and maps each row into a DTO whose
+ * properties are placed with [SelectColumn].
  *
  * Criteria for each alias are combined as `required AND (query criteria, root only) AND mapped filter`.
  * All values are bound parameters; criteria column names are mapped through each table's entity.
  * With `INNER`/`LEFT` one-to-many joins every joined row is one result (and one count).
  */
-class R2dbcJoinQuery(
+internal class JoinQueryEngine(
   private val template: R2dbcEntityTemplate
 ) {
   private val dialect by lazy { template.dataAccessStrategy.dialect as R2dbcDialect }
@@ -120,8 +124,42 @@ class R2dbcJoinQuery(
       )
     }
 
+  /**
+   * `SELECT <select> FROM root JOIN ...` with the `INNER` / `LEFT` joins of [spec] (including their `onCriteria`)
+   * and [required] criteria of those tables in `WHERE`, rendered for this template's database.
+   */
+  fun selectFrom(
+    spec: JoinSpec,
+    select: Collection<SelectFieldOrAsterisk>,
+    required: Map<String, CriteriaDefinition>
+  ): SelectConditionStep<Record> {
+    val subqueryAliases = spec.joins.filterNot { it.mode.joined }.map { it.alias }
+    require(subqueryAliases.isEmpty()) {
+      "select() renders INNER and LEFT joins only; EXISTS / AGGREGATE aliases $subqueryAliases need fetch() / fetchPage()"
+    }
+    val target = { alias: String ->
+      val type = if (alias == spec.rootAlias) spec.root else spec.joins.single { it.alias == alias }.entity
+      JooqConditionMapper.Target(metadata.entity(type)) { name -> joins.field(spec, alias, name) }
+    }
+    val where =
+      required.map { (alias, criteria) ->
+        require(alias in spec.aliases()) { "Unknown table alias '$alias'; declared: ${spec.aliases()}" }
+        conditions.map(criteria, target(alias))
+      }
+    return joins
+      .from(spec, select) { join -> join.onCriteria?.let { conditions.map(it, target(join.alias)) } }
+      .where(where.filterNotNull())
+  }
+
+  /** Column [name] (entity property or raw column) of [alias] in [spec]. */
+  fun field(
+    spec: JoinSpec,
+    alias: String,
+    name: String
+  ): Field<Any?> = joins.field(spec, alias, name)
+
   /** Builds the statement; [resultType] `null` produces `SELECT COUNT(*)` without sort and paging. */
-  internal fun prepare(
+  fun prepare(
     spec: JoinSpec,
     filter: Any?,
     query: Query,
@@ -159,7 +197,7 @@ class R2dbcJoinQuery(
       required: Map<String, CriteriaDefinition>,
       sort: Sort
     ): PreparedOperation<Select<*>> {
-      val fields = filter?.let { SqlQueryMapper.activeFields(it) }.orEmpty()
+      val fields = filter?.let { QueryMapper.activeFields(it) }.orEmpty()
       val aliasOf = { field: MappedField -> field.field.table.ifEmpty { spec.rootAlias } }
       val (aggregateFields, plainFields) = fields.partition { it.field.aggregate != Aggregate.NONE }
 

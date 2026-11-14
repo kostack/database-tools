@@ -17,7 +17,7 @@ annotation class QueryField(
    */
   val ignoreEmpty: Boolean = true,
   /**
-   * Alias of the joined table this column belongs to (see `JoinSpec`).
+   * Alias of the joined table this column belongs to (declared with `table<Entity>("alias")` in `R2dbcQueryBuilder`).
    * Empty = root table. Only supported by join queries; single-table mappers reject it.
    */
   val table: String = "",
