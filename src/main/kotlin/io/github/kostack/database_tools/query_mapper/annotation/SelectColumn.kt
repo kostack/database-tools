@@ -1,7 +1,7 @@
 package io.github.kostack.database_tools.query_mapper.annotation
 
 /**
- * Tells a join query where a result DTO property is read from.
+ * Tells a grid query where a row DTO property is read from.
  *
  * Without this annotation the property is read from the root table. The column is resolved
  * against the table's entity: an entity property name is mapped to its column, anything else
@@ -10,7 +10,7 @@ package io.github.kostack.database_tools.query_mapper.annotation
 @Target(AnnotationTarget.FIELD)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class SelectColumn(
-  /** Table alias declared with `table<Entity>("alias")` in `R2dbcQueryBuilder`. Empty = root table. */
+  /** Table alias declared with `table<Entity>("alias")` in `GridQueryBuilder`. Empty = root table. */
   val table: String = "",
   /** Entity property or column name in that table. Empty = the DTO property name. */
   val name: String = ""

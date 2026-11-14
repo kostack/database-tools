@@ -16,7 +16,7 @@ abstract class QueryMapper<C> {
   fun toCriteriaList(source: Any): List<C> =
     toTableCriteriaList(source).map { (table, criteria) ->
       require(table.isEmpty()) {
-        "QueryField.table ('$table') on ${source::class.simpleName} is only supported by join queries"
+        "QueryField.table ('$table') on ${source::class.simpleName} is only supported by GridQueryBuilder"
       }
       criteria
     }
@@ -24,7 +24,7 @@ abstract class QueryMapper<C> {
   fun toTableCriteriaList(source: Any): List<Pair<String, C>> =
     activeFields(source).map { mapped ->
       require(mapped.field.aggregate == Aggregate.NONE) {
-        "QueryField.aggregate on ${source::class.simpleName}.${mapped.propertyName} is only supported by join queries"
+        "QueryField.aggregate on ${source::class.simpleName}.${mapped.propertyName} is only supported by GridQueryBuilder"
       }
       mapped.field.table to toCriteria(mapped)
     }
@@ -79,7 +79,7 @@ abstract class QueryMapper<C> {
   companion object {
     /**
      * The `@QueryField` properties of [source] that are not skipped (see [QueryField.ignoreEmpty]),
-     * independent of the target query type (used by the Mongo mapper and by `R2dbcQueryBuilder`).
+     * independent of the target query type (used by the Mongo mapper and by `GridQueryBuilder`).
      */
     fun activeFields(source: Any): List<MappedField> =
       source::class.memberProperties.mapNotNull { property ->

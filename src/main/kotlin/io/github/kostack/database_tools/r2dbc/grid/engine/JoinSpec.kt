@@ -1,7 +1,12 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.engine
+
+import io.github.kostack.database_tools.r2dbc.grid.GridQuery
+import io.github.kostack.database_tools.r2dbc.grid.dsl.ColumnCondition
+import io.github.kostack.database_tools.r2dbc.grid.dsl.EntityColumn
+import io.github.kostack.database_tools.r2dbc.grid.dsl.EntityTable
 
 /**
- * Immutable description of a root table and the tables joined to it, built by [JoinQueryBuilder].
+ * Immutable description of a root table and the tables joined to it, built by [GridQuery].
  *
  * Each join links its own [Join.key] column to [Join.parentKey], a column of an already declared root,
  * `INNER` or `LEFT` table (validated by the builder). [Join.condition] is a condition on the joined table's

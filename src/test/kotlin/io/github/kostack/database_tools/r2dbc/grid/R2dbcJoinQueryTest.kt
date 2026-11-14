@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid
 
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.QueryOperator
@@ -8,6 +8,9 @@ import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import io.github.kostack.database_tools.query_mapper.annotation.Sortable
 import io.github.kostack.database_tools.query_mapper.annotation.SortableDefaults
 import io.github.kostack.database_tools.query_mapper.extension.toPageRequest
+import io.github.kostack.database_tools.r2dbc.grid.dsl.ColumnCondition
+import io.github.kostack.database_tools.r2dbc.grid.dsl.table
+import io.github.kostack.database_tools.r2dbc.grid.engine.JoinQueryEngine
 import io.r2dbc.spi.ConnectionFactories
 import io.r2dbc.spi.ConnectionFactory
 import kotlinx.coroutines.flow.toList
@@ -20,7 +23,6 @@ import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.relational.core.mapping.Embedded
-import org.springframework.data.relational.core.query.Query
 import org.springframework.r2dbc.core.await
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
@@ -128,7 +130,7 @@ abstract class R2dbcJoinQueryContract {
   private val template by lazy { R2dbcEntityTemplate(connectionFactory) }
   private val joinQuery by lazy { JoinQueryEngine(template) }
 
-  private val queryBuilder by lazy { R2dbcQueryBuilder(template) }
+  private val queryBuilder by lazy { GridQueryBuilder(template) }
 
   private val user = table<JoinUser>("u")
   private val order = table<JoinOrder>("o")

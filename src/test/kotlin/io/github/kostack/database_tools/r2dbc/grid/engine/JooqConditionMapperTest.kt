@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.engine
 
 import io.github.kostack.database_tools.query_mapper.QueryMapper
 import io.github.kostack.database_tools.query_mapper.QueryOperator
@@ -14,7 +14,6 @@ import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.r2dbc.dialect.MySqlDialect
 import org.springframework.r2dbc.core.DatabaseClient
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /** Renders conditions with the MySQL dialect, without a database. */
 class JooqConditionMapperTest {

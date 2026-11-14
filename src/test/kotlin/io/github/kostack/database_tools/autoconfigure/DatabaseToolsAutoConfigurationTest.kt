@@ -3,7 +3,7 @@ package io.github.kostack.database_tools.autoconfigure
 import io.github.kostack.database_tools.paginator.MongoDbPaginator
 import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
-import io.github.kostack.database_tools.r2dbc.query_builder.R2dbcQueryBuilder
+import io.github.kostack.database_tools.r2dbc.grid.GridQueryBuilder
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import io.mockk.mockk
 import org.assertj.core.api.Assertions.assertThat
@@ -39,7 +39,7 @@ class DatabaseToolsAutoConfigurationTest {
       .withUserConfiguration(R2dbcDependenciesConfiguration::class.java)
       .run { context ->
         assertThat(context).hasSingleBean(R2dbcDbPurger::class.java)
-        assertThat(context).hasSingleBean(R2dbcQueryBuilder::class.java)
+        assertThat(context).hasSingleBean(GridQueryBuilder::class.java)
       }
   }
 

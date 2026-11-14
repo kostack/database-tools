@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.engine
 
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField

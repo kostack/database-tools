@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.engine
 
 /** How a table is joined; set by the builder's `join` / `leftJoin` / `existsJoin` / `aggregateJoin`. */
 internal enum class JoinMode {

@@ -17,14 +17,14 @@ annotation class QueryField(
    */
   val ignoreEmpty: Boolean = true,
   /**
-   * Alias of the joined table this column belongs to (declared with `table<Entity>("alias")` in `R2dbcQueryBuilder`).
-   * Empty = root table. Only supported by join queries; single-table mappers reject it.
+   * Alias of the joined table this column belongs to (declared with `table<Entity>("alias")` in `GridQueryBuilder`).
+   * Empty = root table. Only supported by `GridQueryBuilder`; single-table mappers reject it.
    */
   val table: String = "",
   /**
    * Compare an aggregate of [name] in the [table] instead of the column itself
    * (e.g. `AVG(o.total) >= value`). [table] must be a table joined with `aggregateJoin(...)`;
-   * `COUNT` with an empty [name] counts rows. Only supported by join queries.
+   * `COUNT` with an empty [name] counts rows. Only supported by `GridQueryBuilder`.
    */
   val aggregate: Aggregate = Aggregate.NONE
 )

@@ -3,7 +3,7 @@ package io.github.kostack.database_tools.query_mapper.annotation
 import io.github.kostack.database_tools.query_mapper.Aggregate
 
 /**
- * Reads a join-query DTO property from an aggregate over a table joined with `aggregateJoin(...)`,
+ * Reads a grid row DTO property from an aggregate over a table joined with `aggregateJoin(...)`,
  * computed per root row, e.g. `(SELECT AVG(o.total) FROM orders o WHERE o.user_id = u.id)`.
  *
  * Plain criteria on that alias (filter fields or `required`) restrict the rows being aggregated.

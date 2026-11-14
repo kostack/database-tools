@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.dsl
 
 import kotlin.reflect.KClass
 import kotlin.reflect.KProperty1

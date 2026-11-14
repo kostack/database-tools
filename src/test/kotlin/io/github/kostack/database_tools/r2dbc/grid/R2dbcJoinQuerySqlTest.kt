@@ -1,8 +1,10 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid
 
 import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
+import io.github.kostack.database_tools.r2dbc.grid.dsl.table
+import io.github.kostack.database_tools.r2dbc.grid.engine.JoinQueryEngine
 import io.r2dbc.spi.ConnectionFactories
 import org.junit.jupiter.api.Test
 import org.springframework.data.domain.Sort
@@ -17,7 +19,7 @@ class R2dbcJoinQuerySqlTest {
   private val template =
     R2dbcEntityTemplate(DatabaseClient.create(ConnectionFactories.get("r2dbc:h2:mem:///unused")), MySqlDialect.INSTANCE)
   private val joinQuery = JoinQueryEngine(template)
-  private val queryBuilder = R2dbcQueryBuilder(template)
+  private val queryBuilder = GridQueryBuilder(template)
 
   private val user = table<JoinUser>("u")
   private val order = table<JoinOrder>("o")

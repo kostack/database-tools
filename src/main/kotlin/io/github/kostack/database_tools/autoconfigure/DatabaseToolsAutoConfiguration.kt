@@ -3,7 +3,7 @@ package io.github.kostack.database_tools.autoconfigure
 import io.github.kostack.database_tools.paginator.MongoDbPaginator
 import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
-import io.github.kostack.database_tools.r2dbc.query_builder.R2dbcQueryBuilder
+import io.github.kostack.database_tools.r2dbc.grid.GridQueryBuilder
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -49,7 +49,7 @@ class DatabaseToolsAutoConfiguration {
     @Bean
     @ConditionalOnBean(R2dbcEntityTemplate::class)
     @ConditionalOnMissingBean
-    fun r2dbcQueryBuilder(entityTemplate: R2dbcEntityTemplate): R2dbcQueryBuilder = R2dbcQueryBuilder(entityTemplate)
+    fun gridQueryBuilder(entityTemplate: R2dbcEntityTemplate): GridQueryBuilder = GridQueryBuilder(entityTemplate)
   }
 
   @Configuration(proxyBeanMethods = false)

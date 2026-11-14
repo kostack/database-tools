@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.engine
 
 import io.github.kostack.database_tools.paginator.Pagination
 import io.github.kostack.database_tools.query_mapper.Aggregate
@@ -7,6 +7,9 @@ import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
+import io.github.kostack.database_tools.r2dbc.grid.GridQueryBuilder
+import io.github.kostack.database_tools.r2dbc.grid.dsl.ColumnCondition
+import io.github.kostack.database_tools.r2dbc.grid.dsl.EntityColumn
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -40,7 +43,7 @@ import org.springframework.r2dbc.core.binding.BindTarget
 import kotlin.reflect.KClass
 
 /**
- * Internal engine behind [R2dbcQueryBuilder]: runs `@QueryField`
+ * Internal engine behind [GridQueryBuilder]: runs `@QueryField`
  * filters against a root table plus joined tables (see [JoinSpec]) and maps each row into a DTO whose
  * properties are placed with [SelectColumn].
  *
@@ -331,7 +334,7 @@ internal class JoinQueryEngine(
 
       dto.forEach { property: RelationalPersistentProperty ->
         val owner = "${type.simpleName}.${property.name}"
-        require(!property.isEmbedded) { "$owner is @Embedded, which join queries do not support" }
+        require(!property.isEmbedded) { "$owner is @Embedded, which grid queries do not support" }
         val selectColumn = property.findAnnotation(SelectColumn::class.java)
         val selectAggregate = property.findAnnotation(SelectAggregate::class.java)
         require(
@@ -465,7 +468,7 @@ internal class JoinQueryEngine(
         "$1" -> settings.withParamType(ParamType.NAMED).withRenderNamedParamPrefix("$")
 
         else -> throw UnsupportedOperationException(
-          "${dialect::class.simpleName} bind markers ('$placeholder') are not supported by join queries"
+          "${dialect::class.simpleName} bind markers ('$placeholder') are not supported by grid queries"
         )
       }
     }

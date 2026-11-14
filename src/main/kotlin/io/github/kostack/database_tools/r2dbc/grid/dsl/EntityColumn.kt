@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.dsl
 
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import kotlin.reflect.KProperty1
@@ -11,7 +11,7 @@ class EntityColumn<E : Any, V : Any> internal constructor(
   val table: EntityTable<E>,
   val property: KProperty1<E, *>
 ) {
-  /** `alias.property`, usable wherever join queries accept a column reference (e.g. sort properties). */
+  /** `alias.property`, usable wherever grid queries accept a column reference (e.g. sort properties). */
   val path: String get() = "${table.alias}.${property.name}"
 
   /** Join condition `this = other`. */

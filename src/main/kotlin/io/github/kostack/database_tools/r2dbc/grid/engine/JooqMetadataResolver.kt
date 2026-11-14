@@ -1,4 +1,4 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid.engine
 
 import org.jooq.Field
 import org.jooq.Name
@@ -14,7 +14,7 @@ import kotlin.reflect.KClass
  *
  * Names keep Spring's quoting and letter casing (e.g. backticks on MySQL, upper case on H2),
  * so the SQL refers to exactly the tables and columns Spring Data itself uses.
- * Aliases are rendered unquoted; join query aliases must be plain identifiers.
+ * Aliases are rendered unquoted; grid query aliases must be plain identifiers.
  */
 internal class JooqMetadataResolver(
   private val template: R2dbcEntityTemplate

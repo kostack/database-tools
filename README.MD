@@ -1,6 +1,6 @@
 # Database Tools
 
-A Kotlin/Spring library that provides reactive pagination, flexible query mapping, a typed SQL query builder, and database purging utilities for MongoDB and R2DBC (SQL) databases. Built on top of Spring Data, jOOQ and Kotlin coroutines, it removes boilerplate from common data-access patterns — paginated queries, filter-to-query conversion, typed multi-table joins and aggregates on R2DBC, sort-field allowlisting, after-commit actions, JSON column conversion, and test-environment teardown — so you can focus on business logic instead of infrastructure plumbing.
+A Kotlin/Spring library that provides reactive pagination, flexible query mapping, a typed SQL grid query builder, and database purging utilities for MongoDB and R2DBC (SQL) databases. Built on top of Spring Data, jOOQ and Kotlin coroutines, it removes boilerplate from common data-access patterns — paginated queries, filter-to-query conversion, typed multi-table joins and aggregates on R2DBC, sort-field allowlisting, after-commit actions, JSON column conversion, and test-environment teardown — so you can focus on business logic instead of infrastructure plumbing.
 
 ```kotlin
 val customer = table<Customer>("c")
@@ -25,9 +25,10 @@ val page: Pagination<CustomerGridDto> = queryBuilder
   - [MongoQueryMapper](#mongoquerymapper)
   - [SQL Filters (R2DBC)](#sql-filters-r2dbc)
   - [Query Mapper Extensions](#query-mapper-extensions)
-- [Query Builder (R2DBC)](#query-builder-r2dbc)
+- [Grid Query Builder (R2DBC)](#grid-query-builder-r2dbc)
   - [Aggregates](#aggregates)
   - [SQL Rendering and Binding](#sql-rendering-and-binding)
+  - [Examples](#examples)
 - [Page Request Mapping](#page-request-mapping)
   - [@Sortable](#sortable)
   - [@SortableDefaults](#sortabledefaults)
@@ -78,7 +79,7 @@ The library is published to [Maven Central](https://central.sonatype.com/artifac
 
 ### Requirements
 
-The library's only transitive dependency is [jOOQ](https://www.jooq.org/) (`org.jooq:jooq`, open-source edition), which builds the SQL of join queries. Everything else is provided by your application, so it never overrides your versions; Spring Boot's dependency management also aligns the jOOQ version with yours. Built against **Spring Boot 4.1** (Kotlin 2.4, Java 25).
+The library's only transitive dependency is [jOOQ](https://www.jooq.org/) (`org.jooq:jooq`, open-source edition), which builds the SQL of grid queries. Everything else is provided by your application, so it never overrides your versions; Spring Boot's dependency management also aligns the jOOQ version with yours. Built against **Spring Boot 4.1** (Kotlin 2.4, Java 25).
 
 | Always required | Notes |
 |---|---|
@@ -89,7 +90,7 @@ The library's only transitive dependency is [jOOQ](https://www.jooq.org/) (`org.
 | Only for the features you use | Feature |
 |---|---|
 | `org.springframework.boot:spring-boot-starter-data-mongodb-reactive` | `MongoDbPaginator`, `MongoQueryMapper`, `MongoDbPurger` |
-| `org.springframework.boot:spring-boot-starter-data-r2dbc` | `R2dbcQueryBuilder` (SQL filters, pagination and join queries), `R2dbcDbPurger`, converters, `TransactionalManager` |
+| `org.springframework.boot:spring-boot-starter-data-r2dbc` | `GridQueryBuilder` (SQL grids: filters, joins, sorting, paging), `R2dbcDbPurger`, converters, `TransactionalManager` |
 | `io.asyncer:r2dbc-mysql` | MySQL (`R2dbcDbPurger` is MySQL-only) |
 | `io.swagger.core.v3:swagger-annotations` | OpenAPI schema annotations on `Pagination` |
 
@@ -181,13 +182,13 @@ The items and count queries run in parallel via `coroutineScope` — the total i
 
 ### R2DBC Pagination
 
-On R2DBC (reactive SQL databases such as MySQL, PostgreSQL), pages come from [`R2dbcQueryBuilder`](#query-builder-r2dbc)'s `fetchPage`, which runs the items and count queries in parallel and returns the same `Pagination<T>`. A single table is a query without joins:
+On R2DBC (reactive SQL databases such as MySQL, PostgreSQL), pages come from [`GridQueryBuilder`](#grid-query-builder-r2dbc)'s `fetchPage`, which runs the items and count queries in parallel and returns the same `Pagination<T>`. A single table is a query without joins:
 
 **Inject in your service:**
 
 ```kotlin
 @Service
-class OrderService(private val queryBuilder: R2dbcQueryBuilder) {
+class OrderService(private val queryBuilder: GridQueryBuilder) {
     private val order = table<Order>("o")
 
     suspend fun listOrders(pageable: Pageable, filter: OrderFilter): Pagination<Order> =
@@ -240,7 +241,7 @@ GET /orders?status=OPEN&page=1&size=5
 
 ## Query Mapper
 
-`@QueryField` turns annotated filter data classes into query conditions: `MongoQueryMapper` builds MongoDB queries, and on SQL (R2DBC) the same filters are passed to [`R2dbcQueryBuilder`](#query-builder-r2dbc). It eliminates manual null-checks — only non-null, non-blank fields contribute to the query.
+`@QueryField` turns annotated filter data classes into query conditions: `MongoQueryMapper` builds MongoDB queries, and on SQL (R2DBC) the same filters are passed to [`GridQueryBuilder`](#grid-query-builder-r2dbc). It eliminates manual null-checks — only non-null, non-blank fields contribute to the query.
 
 ### @QueryField
 
@@ -251,7 +252,7 @@ Place `@QueryField` on properties of a filter data class to declare how each fie
     name        = "",               // Field (Mongo) or entity property / column (SQL). Defaults to the Kotlin property name.
     operator    = QueryOperator.EQ,
     ignoreEmpty = true,             // Skip null and blank String values (default: true).
-    table       = "",               // Table alias from table<Entity>("alias"); see Query Builder. Empty = root table.
+    table       = "",               // Table alias from table<Entity>("alias"); see Grid Query Builder. Empty = root table.
     aggregate   = Aggregate.NONE    // Compare COUNT/SUM/AVG/MIN/MAX of the column; see Aggregates.
 )
 ```
@@ -336,13 +337,13 @@ val query = MongoQueryMapper.toQuery(
 )
 ```
 
-Top-level keys of `base` are implicitly ANDed with it. A `base` that already has a top-level `$and` cannot be extended this way (Spring throws). Fields with `@QueryField(table = …)` or `aggregate = …` are rejected — they only apply to SQL join queries.
+Top-level keys of `base` are implicitly ANDed with it. A `base` that already has a top-level `$and` cannot be extended this way (Spring throws). Fields with `@QueryField(table = …)` or `aggregate = …` are rejected — they only apply to SQL grid queries ([Grid Query Builder](#grid-query-builder-r2dbc)).
 
 ---
 
 ### SQL Filters (R2DBC)
 
-On SQL databases, `@QueryField` filters run through [`R2dbcQueryBuilder`](#query-builder-r2dbc) — a single table is simply a query without joins:
+On SQL databases, `@QueryField` filters run through [`GridQueryBuilder`](#grid-query-builder-r2dbc) — a single table is simply a query without joins:
 
 ```kotlin
 data class OrderFilter(
@@ -360,7 +361,7 @@ val page: Pagination<Order> = queryBuilder
 // WHERE (o.`tenant_id` = ? AND o.`customer_id` = ? AND o.`statuses` IN (?, ?)) ... LIMIT ...
 ```
 
-The result type can be the entity itself or a DTO (see [Query Builder](#query-builder-r2dbc)). Values are bound as parameters and converted to the entity property's type.
+The result type can be the entity itself or a DTO (see [Grid Query Builder](#grid-query-builder-r2dbc)). Values are bound as parameters and converted to the entity property's type.
 
 SQL wildcards in user input are always escaped — `%`, `_`, and `\` in the value are quoted automatically:
 
@@ -371,7 +372,7 @@ SQL wildcards in user input are always escaped — `%`, `_`, and `\` in the valu
 
 `REGEX` and `REGEX_IGNORE_CASE` throw `UnsupportedOperationException` on SQL — use `CONTAINS`, `STARTS_WITH`, or `ENDS_WITH` instead.
 
-`MongoQueryMapper` rejects fields with `@QueryField(table = ...)` or `aggregate`; on SQL use the [Query Builder](#query-builder-r2dbc).
+`MongoQueryMapper` rejects fields with `@QueryField(table = ...)` or `aggregate`; on SQL use the [Grid Query Builder](#grid-query-builder-r2dbc).
 
 ---
 
@@ -382,7 +383,7 @@ import io.github.kostack.database_tools.query_mapper.extension.toMappedQuery
 import io.github.kostack.database_tools.query_mapper.extension.toPageRequest
 import io.github.kostack.database_tools.query_mapper.extension.map
 
-// Map a filter into a MongoDB query; the receiver's sort / paging / fields are kept (SQL: use R2dbcQueryBuilder)
+// Map a filter into a MongoDB query; the receiver's sort / paging / fields are kept (SQL: use GridQueryBuilder)
 val mongoQuery = Query().limit(20).toMappedQuery(filter)              // MongoDB (receiver is copied, not mutated)
 
 // Mandatory criteria go first
@@ -397,13 +398,13 @@ val userDtos: Pagination<UserDto> = userPagination.map { UserDto(it) }
 
 ---
 
-## Query Builder (R2DBC)
+## Grid Query Builder (R2DBC)
 
-`R2dbcQueryBuilder` (auto-configured when an `R2dbcEntityTemplate` bean exists) is the library's SQL query API for **grids**: list endpoints that filter, sort and page rows. It runs `@QueryField` filters over a single table or a root table plus joined tables, and maps each row into an entity or DTO. Tables and columns are referenced through entity classes and properties:
+`GridQueryBuilder` (auto-configured when an `R2dbcEntityTemplate` bean exists) is the library's SQL query API for **grids**: list endpoints that filter, sort and page rows. It runs `@QueryField` filters over a single table or a root table plus joined tables, and maps each row into an entity or DTO. Tables and columns are referenced through entity classes and properties:
 
 ```kotlin
 @Service
-class CustomerService(private val queryBuilder: R2dbcQueryBuilder) {
+class CustomerService(private val queryBuilder: GridQueryBuilder) {
     private val customer = table<Customer>("c")
     private val order = table<Order>("o")
 
@@ -414,6 +415,13 @@ class CustomerService(private val queryBuilder: R2dbcQueryBuilder) {
             .on(customer[Customer::id] eq order[Order::customerId])
             .fetchPage<CustomerGridDto>(filter = filter, pageable = pageable)
 }
+```
+
+Imports: the entry points are in `io.github.kostack.database_tools.r2dbc.grid` (`GridQueryBuilder`, `GridQuery`), and tables, columns and conditions in `io.github.kostack.database_tools.r2dbc.grid.dsl` (`table`, `EntityTable`, `EntityColumn`, `ColumnCondition`, `JoinCondition`):
+
+```kotlin
+import io.github.kostack.database_tools.r2dbc.grid.GridQueryBuilder
+import io.github.kostack.database_tools.r2dbc.grid.dsl.table
 ```
 
 The SQL is built with jOOQ and executed through Spring's `R2dbcEntityTemplate`, so entity mapping, converters and transactions work as with any other Spring Data R2DBC query. Supported databases: **MySQL**, **H2** and **PostgreSQL** (see [SQL Rendering and Binding](#sql-rendering-and-binding)).
@@ -521,7 +529,7 @@ query.where(user[User::tenantId] eq tenantId).fetchPage<UserOrderRow>(filter, pa
 - Sort properties are DTO property names (`orderId`) or `alias.property` (`o.total`, or `order[Order::total].path`); anything that isn't a plain identifier is rejected.
 - `ignoreCase()` orders (`sort=name,asc,ignorecase`) sort by `LOWER(column)`; they are ignored for aggregate properties.
 - Every value is a bind parameter, converted to the entity property's type like Spring Data does (e.g. `0` → `0L` for a `Long` id, enums and custom converters applied).
-- Builders are immutable: every step returns a new builder, so a base query can be shared and extended.
+- `GridQueryBuilder.from(...)` returns a `GridQuery`. It is immutable: every step returns a new `GridQuery`, so a base query (e.g. with the tenant condition) can be shared and extended.
 - Misuse fails fast with `IllegalArgumentException`: an alias that isn't a plain identifier (`table<Order>("o-1")`), an ON condition that doesn't use the joined table, compares two of its own columns or uses an `existsJoin` / `aggregateJoin` table as the parent, an extra ON condition (`and = …`) on another table, a condition combining columns of different tables, or a table that was not declared (or was declared under another entity type).
 
 **Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the filter class and map the `Pageable` with it. `field` may be a DTO property or `alias.property`:
@@ -623,6 +631,166 @@ ORDER BY o.`id` ASC LIMIT 5 OFFSET 10
 -- binds: [0, "%ali%", 1, "PAID", "A"]; the count query is the same WHERE without ORDER BY / LIMIT
 ```
 
+### Examples
+
+Three complete grid queries, with the SQL they render on MySQL (line breaks added). The entities:
+
+```kotlin
+@Table("customers")   data class Customer(@Id val id: Long, val tenantId: Long, val name: String, val email: String, val tier: Tier)
+@Table("orders")      data class Order(@Id val id: Long, val tenantId: Long, val customerId: Long?, val status: OrderStatus,
+                                       val total: BigDecimal, val createdAt: Instant, val deletedAt: Instant?)
+@Table("order_items") data class OrderItem(@Id val id: Long, val orderId: Long, val sku: String, val quantity: Int, val price: BigDecimal)
+@Table("shipments")   data class Shipment(@Id val id: Long, val orderId: Long, val carrier: String, val trackingNo: String?)
+@Table("tickets")     data class Ticket(@Id val id: Long, val customerId: Long, val status: String)
+@Table("accounts")    data class Account(@Id val id: Long, val iban: String, val owner: String)
+@Table("transfers")   data class Transfer(@Id val id: Long, val fromAccountId: Long, val toAccountId: Long, val amount: BigDecimal, val bookedAt: Instant)
+```
+
+#### Orders grid: all four join kinds, fixed conditions with `OR`, an aggregate filter
+
+```kotlin
+data class OrderGridFilter(
+    @QueryField(operator = IN) val status: List<OrderStatus>? = null,
+    @QueryField(name = "createdAt", operator = GTE) val createdFrom: Instant? = null,
+    @QueryField(name = "createdAt", operator = LT) val createdTo: Instant? = null,
+    @QueryField(table = "c", name = "name", operator = CONTAINS_IGNORE_CASE) val customer: String? = null,
+    @QueryField(table = "i", name = "sku") val sku: String? = null,                                  // activates EXISTS
+    @QueryField(table = "li", aggregate = Aggregate.COUNT, operator = GTE) val minItems: Long? = null // filter on COUNT
+)
+
+data class OrderGridRow(
+    val id: Long, val status: OrderStatus, val total: BigDecimal, val createdAt: Instant,
+    @SelectColumn(table = "c", name = "name") val customerName: String,
+    @SelectColumn(table = "sh", name = "carrier") val carrier: String?,            // LEFT → nullable
+    @SelectColumn(table = "sh", name = "trackingNo") val trackingNo: String?,
+    @SelectAggregate(table = "li", function = Aggregate.COUNT) val itemCount: Long,
+    @SelectAggregate(table = "li", function = Aggregate.SUM, name = "quantity") val units: Long?
+)
+
+val order = table<Order>("o"); val customer = table<Customer>("c"); val shipment = table<Shipment>("sh")
+val item = table<OrderItem>("i"); val lines = table<OrderItem>("li")       // same entity, two roles
+
+queryBuilder
+    .from(order)
+    .join(customer).on(order[Order::customerId] eq customer[Customer::id])    // Long? FK vs Long id
+    .leftJoin(shipment).on(order[Order::id] eq shipment[Shipment::orderId])
+    .existsJoin(item).on(order[Order::id] eq item[OrderItem::orderId])
+    .aggregateJoin(lines).on(order[Order::id] eq lines[OrderItem::orderId])
+    .where(
+        order[Order::tenantId] eq tenantId,
+        order[Order::deletedAt].isNull(),
+        (order[Order::status] ne OrderStatus.CANCELLED) or (order[Order::total] gt BigDecimal("1000")),
+        lines[OrderItem::quantity] gt 0                                      // on the aggregate table: scopes what is counted
+    )
+    .fetchPage<OrderGridRow>(filter, PageRequest.of(2, 20, Sort.by(Sort.Order.asc("customerName").ignoreCase(), Sort.Order.desc("total"))))
+```
+
+```sql
+SELECT o.`id` AS `id`, o.`status` AS `status`, o.`total` AS `total`, o.`created_at` AS `created_at`,
+       c.`name` AS `customer_name`, sh.`carrier` AS `carrier`, sh.`tracking_no` AS `tracking_no`,
+       (SELECT count(*) FROM `order_items` AS li WHERE (li.`quantity` > ? AND li.`order_id` = o.`id`)) AS `item_count`,
+       (SELECT sum(li.`quantity`) FROM `order_items` AS li WHERE (li.`quantity` > ? AND li.`order_id` = o.`id`)) AS `units`
+FROM `orders` AS o
+JOIN `customers` AS c ON o.`customer_id` = c.`id`
+LEFT OUTER JOIN `shipments` AS sh ON o.`id` = sh.`order_id`
+WHERE (o.`tenant_id` = ? AND o.`deleted_at` IS NULL AND (o.`status` <> ? OR o.`total` > ?)        -- fixed conditions
+   AND o.`created_at` >= ? AND o.`status` IN (?, ?) AND upper(c.`name`) LIKE upper(?)          -- filter fields
+   AND o.`id` IN (SELECT i.`order_id` FROM `order_items` AS i WHERE i.`sku` = ?)              -- EXISTS (sku filter)
+   AND (SELECT count(*) FROM `order_items` AS li WHERE (li.`quantity` > ? AND li.`order_id` = o.`id`)) >= ?)
+ORDER BY lower(c.`name`) ASC, o.`total` DESC LIMIT 20 OFFSET 40
+-- binds: [0, 0, 7, CANCELLED, 1000, 2026-01-01T00:00:00Z, PAID, SHIPPED, %acme%, SKU-1, 0, 2]
+```
+
+- Fixed root conditions come before the filter fields in `WHERE`; the `OR` keeps its parentheses, and enums are bound as their names.
+- The fixed condition on the aggregate table `li` lands inside every `li` subquery, so only lines with `quantity > 0` are counted; it does not remove orders.
+- The `EXISTS` filter on `sku` never duplicates orders, even when an order has several matching lines.
+
+#### Customers grid: stats over paid orders only, "has an open ticket" filter, fixed `OR`
+
+```kotlin
+data class CustomerGridFilter(
+    @QueryField(operator = CONTAINS_IGNORE_CASE) val email: String? = null,
+    @QueryField(table = "paid", aggregate = Aggregate.SUM, name = "total", operator = GTE) val minSpent: BigDecimal? = null,
+    @QueryField(table = "t", name = "status") val ticketStatus: String? = null
+)
+
+data class CustomerGridRow(
+    val id: Long, val name: String, val tier: Tier,
+    @SelectAggregate(table = "paid", function = Aggregate.COUNT) val paidOrders: Long,
+    @SelectAggregate(table = "paid", function = Aggregate.SUM, name = "total") val spent: BigDecimal?,
+    @SelectAggregate(table = "paid", function = Aggregate.MAX, name = "createdAt") val lastOrderAt: Instant?
+)
+
+val c = table<Customer>("c"); val paid = table<Order>("paid"); val ticket = table<Ticket>("t")
+
+queryBuilder
+    .from(c)
+    .aggregateJoin(paid).on(c[Customer::id] eq paid[Order::customerId], and = paid[Order::status] eq OrderStatus.PAID)
+    .existsJoin(ticket).on(c[Customer::id] eq ticket[Ticket::customerId])
+    .where(c[Customer::tenantId] eq tenantId, (c[Customer::tier] eq Tier.GOLD) or (c[Customer::tier] eq Tier.PLATINUM))
+    .fetchPage<CustomerGridRow>(CustomerGridFilter(minSpent = BigDecimal("500"), ticketStatus = "OPEN"),
+                                PageRequest.of(2, 20, Sort.by(Sort.Direction.DESC, "spent")))
+```
+
+```sql
+SELECT c.`id` AS `id`, c.`name` AS `name`, c.`tier` AS `tier`,
+       (SELECT count(*) FROM `orders` AS paid WHERE (paid.`status` = ? AND paid.`customer_id` = c.`id`)) AS `paid_orders`,
+       (SELECT sum(paid.`total`) FROM `orders` AS paid WHERE (paid.`status` = ? AND paid.`customer_id` = c.`id`)) AS `spent`,
+       (SELECT max(paid.`created_at`) FROM `orders` AS paid WHERE (paid.`status` = ? AND paid.`customer_id` = c.`id`)) AS `last_order_at`
+FROM `customers` AS c
+WHERE (c.`tenant_id` = ? AND (c.`tier` = ? OR c.`tier` = ?)
+   AND c.`id` IN (SELECT t.`customer_id` FROM `tickets` AS t WHERE t.`status` = ?)
+   AND (SELECT sum(paid.`total`) FROM `orders` AS paid WHERE (paid.`status` = ? AND paid.`customer_id` = c.`id`)) >= ?)
+ORDER BY `spent` DESC LIMIT 20 OFFSET 40
+-- binds: [PAID, PAID, PAID, 7, GOLD, PLATINUM, OPEN, PAID, 500]
+```
+
+- `and = paid[Order::status] eq PAID` restricts every aggregate, including the `minSpent` filter, to paid orders. Customers without paid orders still appear, with `paidOrders = 0` and `spent = null`.
+- `sort=spent` orders by the select alias instead of repeating the subquery.
+
+#### Transfers grid: the same entity joined twice
+
+```kotlin
+data class TransferGridFilter(
+    @QueryField(table = "src", name = "owner", operator = CONTAINS_IGNORE_CASE) val from: String? = null,
+    @QueryField(table = "dst", name = "owner", operator = CONTAINS_IGNORE_CASE) val to: String? = null,
+    @QueryField(name = "amount", operator = GTE) val minAmount: BigDecimal? = null
+)
+
+data class TransferGridRow(
+    val id: Long, val amount: BigDecimal, val bookedAt: Instant,
+    @SelectColumn(table = "src", name = "iban") val fromIban: String,
+    @SelectColumn(table = "src", name = "owner") val fromOwner: String,
+    @SelectColumn(table = "dst", name = "iban") val toIban: String,
+    @SelectColumn(table = "dst", name = "owner") val toOwner: String
+)
+
+val t = table<Transfer>("t"); val src = table<Account>("src"); val dst = table<Account>("dst")
+
+queryBuilder
+    .from(t)
+    .join(src).on(t[Transfer::fromAccountId] eq src[Account::id])
+    .join(dst).on(t[Transfer::toAccountId] eq dst[Account::id])
+    .where(t[Transfer::bookedAt] ge monthStart, t[Transfer::bookedAt] lt nextMonthStart)    // a range = ge + lt
+    .fetchPage<TransferGridRow>(TransferGridFilter(from = "smith", minAmount = BigDecimal("100")),
+                                PageRequest.of(2, 20, Sort.by(Sort.Direction.DESC, "bookedAt")))
+```
+
+```sql
+SELECT t.`id` AS `id`, t.`amount` AS `amount`, t.`booked_at` AS `booked_at`,
+       src.`iban` AS `from_iban`, src.`owner` AS `from_owner`, dst.`iban` AS `to_iban`, dst.`owner` AS `to_owner`
+FROM `transfers` AS t
+JOIN `accounts` AS src ON t.`from_account_id` = src.`id`
+JOIN `accounts` AS dst ON t.`to_account_id` = dst.`id`
+WHERE (t.`booked_at` >= ? AND t.`booked_at` < ? AND t.`amount` >= ? AND upper(src.`owner`) LIKE upper(?))
+ORDER BY t.`booked_at` DESC LIMIT 20 OFFSET 40
+-- binds: [2026-11-01T00:00:00Z, 2026-12-01T00:00:00Z, 100, %smith%]
+```
+
+- The two aliases are independent tables, and the DTO picks columns from each. The `to` filter is `null`, so it adds nothing to the SQL.
+
+Out of scope for the builder (use jOOQ or `DatabaseClient` directly): comparing two columns ("source owner = destination owner"), `OR` across tables ("GOLD customers **or** customers with an open ticket") and `GROUP BY` reports ("revenue per month").
+
 ---
 
 ## Page Request Mapping
@@ -644,7 +812,7 @@ data class UserFilter(
 | Parameter | Description |
 |-----------|-------------|
 | `name`    | The sort field name as exposed in the API (`sort=name,asc`). |
-| `field`   | What to sort by: the document field (MongoDB), or a result-DTO property / `alias.property` (query builder). Defaults to `name` when blank. |
+| `field`   | What to sort by: the document field (MongoDB), or a grid row property / `alias.property` (`GridQueryBuilder`). Defaults to `name` when blank. |
 
 ### @SortableDefaults
 
@@ -816,7 +984,7 @@ All beans are registered by Spring Boot auto-configuration and back off when you
 |---|---|
 | `MongoDbPaginator` | a `ReactiveMongoTemplate` bean exists |
 | `MongoDbPurger` | a `ReactiveMongoOperations` bean exists |
-| `R2dbcQueryBuilder` | an `R2dbcEntityTemplate` bean exists |
+| `GridQueryBuilder` | an `R2dbcEntityTemplate` bean exists |
 | `R2dbcDbPurger` | a `DatabaseClient` bean exists |
 | `TransactionalManager` | Spring's reactive transaction support is on the classpath |
 | `R2dbcCustomConversions` (JSON converters) | a `ConnectionFactory` and a Jackson 3 `ObjectMapper` bean exist |
@@ -918,7 +1086,7 @@ class OrderRepositoryTest(
 ./gradlew installGitHook   # pre-commit hook that enforces formatting
 ```
 
-The R2DBC query builder tests run against H2 and against MySQL 8.4 via [Testcontainers](https://testcontainers.com). The MySQL tests need a running Docker daemon and are **skipped** when Docker is unavailable.
+The grid query tests run against H2 and against MySQL 8.4 via [Testcontainers](https://testcontainers.com). The MySQL tests need a running Docker daemon and are **skipped** when Docker is unavailable.
 
 ### Publishing to Maven Local
 

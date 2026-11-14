@@ -1,16 +1,23 @@
-package io.github.kostack.database_tools.r2dbc.query_builder
+package io.github.kostack.database_tools.r2dbc.grid
 
 import io.github.kostack.database_tools.paginator.Pagination
+import io.github.kostack.database_tools.r2dbc.grid.dsl.ColumnCondition
+import io.github.kostack.database_tools.r2dbc.grid.dsl.EntityTable
+import io.github.kostack.database_tools.r2dbc.grid.dsl.JoinCondition
+import io.github.kostack.database_tools.r2dbc.grid.engine.JoinMode
+import io.github.kostack.database_tools.r2dbc.grid.engine.JoinQueryEngine
+import io.github.kostack.database_tools.r2dbc.grid.engine.JoinSpec
 import kotlinx.coroutines.flow.Flow
 import org.springframework.data.domain.Pageable
 import org.springframework.data.domain.Sort
 import kotlin.reflect.KClass
 
 /**
- * An immutable join query: every step returns a new builder. Filters, DTO mapping (`@SelectColumn`,
- * `@SelectAggregate`), sorting and paging are applied by the join query engine.
+ * An immutable grid query, created by [GridQueryBuilder.from]: every step returns a new query, so a base query
+ * can be shared and extended. Filters, row mapping (`@SelectColumn`, `@SelectAggregate`), sorting and paging
+ * are applied when it is fetched.
  */
-class JoinQueryBuilder internal constructor(
+class GridQuery internal constructor(
   private val joinQuery: JoinQueryEngine,
   internal val spec: JoinSpec,
   private val required: List<ColumnCondition>
@@ -33,9 +40,9 @@ class JoinQueryBuilder internal constructor(
    * On an `existsJoin` table they activate the semi-join; on an `aggregateJoin` table they restrict
    * the rows being aggregated.
    */
-  fun where(vararg conditions: ColumnCondition): JoinQueryBuilder {
+  fun where(vararg conditions: ColumnCondition): GridQuery {
     conditions.forEach { requireDeclared(it.table) }
-    return JoinQueryBuilder(joinQuery, spec, required + conditions)
+    return GridQuery(joinQuery, spec, required + conditions)
   }
 
   /**
@@ -89,7 +96,7 @@ class JoinQueryBuilder internal constructor(
     fun on(
       condition: JoinCondition,
       and: ColumnCondition? = null
-    ): JoinQueryBuilder {
+    ): GridQuery {
       require(and == null || and.table.alias == table.alias) {
         "The extra ON condition of '${table.alias}' must use its own columns, not '${and?.table?.alias}'"
       }
@@ -109,7 +116,7 @@ class JoinQueryBuilder internal constructor(
       }
 
       val joined = spec.join(JoinSpec.Join(table, mode, parentKey, key, and))
-      return JoinQueryBuilder(joinQuery, joined, required)
+      return GridQuery(joinQuery, joined, required)
     }
   }
 
