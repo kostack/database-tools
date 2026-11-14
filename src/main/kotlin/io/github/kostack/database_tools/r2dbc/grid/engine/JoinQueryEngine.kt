@@ -300,9 +300,8 @@ internal class JoinQueryEngine(
     ): Condition =
       when (node) {
         is ColumnCondition.Node.Compare -> {
-          val name = node.column.property.name
-          val type = entities.getValue(alias).getPersistentProperty(name)?.typeInformation
-          conditions.compare(column(alias, name), node.operator, node.value, type, "Condition on ${node.column}")
+          val type = persistentProperty(node.column).typeInformation
+          conditions.compare(column(node.column), node.operator, node.value, type, "Condition on ${node.column}")
         }
 
         is ColumnCondition.Node.All -> {
@@ -377,8 +376,26 @@ internal class JoinQueryEngine(
           if (join.mode == JoinMode.LEFT) from.leftOuterJoin(table).on(on) else from.join(table).on(on)
         }
 
-    /** The jOOQ field of a typed entity column. */
-    private fun column(column: EntityColumn<*, *>): Field<Any?> = column(column.table.alias, column.property.name)
+    /** The jOOQ field of a typed entity column; its property must be a persistent, non-embedded one. */
+    private fun column(column: EntityColumn<*, *>): Field<Any?> {
+      persistentProperty(column)
+      return column(column.table.alias, column.property.name)
+    }
+
+    /**
+     * The mapped property of a typed column. Unlike annotation names, a typed column is never a raw column name:
+     * a `@Transient`, unmapped or `@Embedded` property is a programming error, not a fallback.
+     */
+    private fun persistentProperty(column: EntityColumn<*, *>): RelationalPersistentProperty {
+      val entity = entities.getValue(column.table.alias)
+      val property = entity.getPersistentProperty(column.property.name)
+      require(property != null) {
+        "$column: ${column.table.type.simpleName}.${column.property.name} is not a persistent property " +
+          "(@Transient or not mapped by Spring Data)"
+      }
+      require(!property.isEmbedded) { "$column: @Embedded properties are not supported by grid queries" }
+      return property
+    }
 
     private fun requireAlias(alias: String) =
       require(alias in entities) { "Unknown table alias '$alias'; declared: ${spec.aliases()}" }

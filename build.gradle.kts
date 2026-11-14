@@ -36,8 +36,9 @@ dependencies {
   testImplementation(springBootBom)
   testFixturesImplementation(springBootBom)
 
-  // R2dbcJoinQuery builds its SQL with jOOQ, so it is a published runtime dependency.
-  api("org.jooq:jooq:$jooqVersion")
+  // GridQueryBuilder renders its SQL with jOOQ internally; no jOOQ type is part of the public API,
+  // so it is published as a runtime-only dependency.
+  implementation("org.jooq:jooq:$jooqVersion")
 
   // Provided by the consuming application; not published as dependencies.
   listOf(

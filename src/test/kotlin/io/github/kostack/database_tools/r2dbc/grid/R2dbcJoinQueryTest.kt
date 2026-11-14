@@ -19,10 +19,12 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.springframework.data.annotation.Id
+import org.springframework.data.annotation.Transient
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.relational.core.mapping.Embedded
+import org.springframework.data.relational.core.mapping.Table
 import org.springframework.r2dbc.core.await
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
@@ -42,6 +44,14 @@ data class JoinOrder(
   val userId: Long,
   val status: String,
   val total: Int
+)
+
+/** Maps join_user with a property Spring Data does not persist. */
+@Table("join_user")
+data class TransientUser(
+  @Id val id: Long,
+  val name: String,
+  @Transient val label: String = ""
 )
 
 data class JoinItem(
@@ -706,6 +716,42 @@ abstract class R2dbcJoinQueryContract {
         queryBuilder.from(user).join(order).on(user[JoinUser::id] eq other[JoinOrder::userId])
       }
     assertTrue(failure.message!!.contains("must use one of its columns"), failure.message)
+  }
+
+  @Test
+  fun `query builder rejects a column of another type under the joined alias`() {
+    val impostor = table<JoinItem>("o")
+    val key =
+      assertThrows<IllegalArgumentException> {
+        queryBuilder.from(user).join(order).on(user[JoinUser::id] eq impostor[JoinItem::orderId])
+      }
+    assertTrue(key.message!!.contains("belongs to JoinItem o"), key.message)
+
+    val extra =
+      assertThrows<IllegalArgumentException> {
+        queryBuilder
+          .from(user)
+          .join(order)
+          .on(user[JoinUser::id] eq order[JoinOrder::userId], and = impostor[JoinItem::sku] eq "A")
+      }
+    assertTrue(extra.message!!.contains("must use its own columns"), extra.message)
+
+    assertThrows<IllegalArgumentException> { (order[JoinOrder::status] eq "PAID") and (impostor[JoinItem::sku] eq "A") }
+  }
+
+  @Test
+  fun `query builder rejects typed conditions on non-persistent properties`() {
+    val transientUser = table<TransientUser>("t")
+    val failure =
+      assertThrows<IllegalArgumentException> {
+        runBlocking {
+          queryBuilder
+            .from(transientUser)
+            .where(transientUser[TransientUser::label] eq "x")
+            .count()
+        }
+      }
+    assertTrue(failure.message!!.contains("not a persistent property"), failure.message)
   }
 
   @Test

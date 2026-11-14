@@ -97,8 +97,8 @@ class GridQuery internal constructor(
       condition: JoinCondition,
       and: ColumnCondition? = null
     ): GridQuery {
-      require(and == null || and.table.alias == table.alias) {
-        "The extra ON condition of '${table.alias}' must use its own columns, not '${and?.table?.alias}'"
+      require(and == null || and.table.sameAs(table)) {
+        "The extra ON condition of '${table.alias}' must use its own columns, not '${and?.table}'"
       }
       val (parentKey, key) =
         when (table.alias) {
@@ -108,6 +108,9 @@ class GridQuery internal constructor(
         }
       require(parentKey.table.alias != table.alias) {
         "ON of '${table.alias}' compares two of its own columns: $condition"
+      }
+      require(key.table.sameAs(table)) {
+        "ON of '${table.alias}': $key belongs to ${key.table}, but '${table.alias}' is declared as $table"
       }
       requireDeclared(parentKey.table)
       val parentMode = spec.modeOf(parentKey.table.alias)

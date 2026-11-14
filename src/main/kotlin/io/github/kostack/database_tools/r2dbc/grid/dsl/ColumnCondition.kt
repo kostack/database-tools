@@ -31,6 +31,9 @@ class ColumnCondition internal constructor(
     require(other.table.alias == table.alias) {
       "Conditions on '${table.alias}' and '${other.table.alias}' cannot be combined; pass them to where() separately"
     }
+    require(other.table.type == table.type) {
+      "Conditions on '${table.alias}' use different entity types: $table and ${other.table}"
+    }
     return other.node
   }
 

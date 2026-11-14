@@ -22,6 +22,9 @@ class EntityTable<E : Any>(
 
   operator fun <V> get(property: KProperty1<E, V>): EntityColumn<E, V & Any> = EntityColumn(this, property)
 
+  /** Same alias and entity type; two tables under one alias but of different types are a declaration error. */
+  internal fun sameAs(other: EntityTable<*>): Boolean = alias == other.alias && type == other.type
+
   override fun toString(): String = "${type.simpleName} $alias"
 
   private companion object {
