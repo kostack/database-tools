@@ -1,6 +1,5 @@
 package io.github.kostack.database_tools.r2dbc.query_builder
 
-import org.springframework.data.relational.core.query.CriteriaDefinition
 import kotlin.reflect.KClass
 
 enum class JoinMode {
@@ -38,20 +37,15 @@ enum class JoinMode {
  *   .join(Item::class, "i", "o.id" to "order_id", mode = JoinMode.EXISTS)
  * ```
  *
- * In each `on` pair, the left side is `alias.column` of an already declared table
+ * In the `on` pair, the left side is `alias.column` of an already declared table
  * (a bare name means the root table) and the right side is a column of the joined table.
  * Names are resolved against the entities: property names map to their columns,
  * anything else is used as a raw column name.
  *
- * `onCriteria` adds value conditions on the joined table's own columns, ANDed after the column pairs:
- *  - `INNER` / `LEFT`: rendered in `ON` — for `LEFT`, unmatched root rows are kept (unlike criteria in `WHERE`);
+ * `onCondition` is a condition on the joined table's own columns, ANDed after the column pair:
+ *  - `INNER` / `LEFT`: rendered in `ON` — for `LEFT`, unmatched root rows are kept (unlike conditions in `WHERE`);
  *  - `EXISTS`: added to the subquery; does not by itself activate the EXISTS filter;
  *  - `AGGREGATE`: always restricts the rows being aggregated.
- *
- * ```kotlin
- * .join(Order::class, "o", "u.id" to "userId", mode = JoinMode.LEFT, onCriteria = Criteria.where("status").`is`("PAID"))
- * // LEFT OUTER JOIN orders o ON u.id = o.user_id AND (o.status = ?)
- * ```
  */
 internal class JoinSpec private constructor(
   val root: KClass<*>,
@@ -62,40 +56,37 @@ internal class JoinSpec private constructor(
     val entity: KClass<*>,
     val alias: String,
     val mode: JoinMode,
-    val on: List<Pair<String, String>>,
-    val onCriteria: CriteriaDefinition? = null
+    val on: Pair<String, String>,
+    val onCondition: ColumnCondition? = null
   )
 
   fun join(
     entity: KClass<*>,
     alias: String,
-    vararg on: Pair<String, String>,
+    on: Pair<String, String>,
     mode: JoinMode = JoinMode.INNER,
-    onCriteria: CriteriaDefinition? = null
+    onCondition: ColumnCondition? = null
   ): JoinSpec {
     requireAlias(alias)
     require(aliases().none { it == alias }) { "Duplicate join alias '$alias'" }
-    require(on.isNotEmpty()) { "Join '$alias' needs at least one ON column pair" }
-
-    on.forEach { (left, _) ->
-      val leftAlias = left.substringBefore('.', rootAlias)
-      val leftJoin = joins.firstOrNull { it.alias == leftAlias }
-      require(leftAlias == rootAlias || leftJoin != null) {
-        "Join '$alias' references unknown alias '$leftAlias' in ON ('$left')"
-      }
-      require(leftJoin == null || leftJoin.mode.joined) {
-        "Join '$alias' cannot reference ${leftJoin?.mode} alias '$leftAlias' in ON; only the root, INNER and LEFT aliases"
-      }
+    val left = on.first
+    val leftAlias = left.substringBefore('.', rootAlias)
+    val leftJoin = joins.firstOrNull { it.alias == leftAlias }
+    require(leftAlias == rootAlias || leftJoin != null) {
+      "Join '$alias' references unknown alias '$leftAlias' in ON ('$left')"
+    }
+    require(leftJoin == null || leftJoin.mode.joined) {
+      "Join '$alias' cannot reference ${leftJoin?.mode} alias '$leftAlias' in ON; only the root, INNER and LEFT aliases"
     }
 
-    return JoinSpec(root, rootAlias, joins + Join(entity, alias, mode, on.toList(), onCriteria))
+    return JoinSpec(root, rootAlias, joins + Join(entity, alias, mode, on, onCondition))
   }
 
   fun aliases(): List<String> = listOf(rootAlias) + joins.map { it.alias }
 
   fun modeOf(alias: String): JoinMode? = joins.firstOrNull { it.alias == alias }?.mode
 
-  fun onCriteriaOf(alias: String): CriteriaDefinition? = joins.firstOrNull { it.alias == alias }?.onCriteria
+  fun onConditionOf(alias: String): ColumnCondition? = joins.firstOrNull { it.alias == alias }?.onCondition
 
   companion object {
     fun from(

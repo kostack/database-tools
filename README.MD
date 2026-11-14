@@ -28,7 +28,6 @@ val page: Pagination<CustomerGridDto> = queryBuilder
 - [Query Builder (R2DBC)](#query-builder-r2dbc)
   - [Aggregates](#aggregates)
   - [SQL Rendering and Binding](#sql-rendering-and-binding)
-  - [Building Your Own jOOQ Queries](#building-your-own-jooq-queries)
 - [Page Request Mapping](#page-request-mapping)
   - [@Sortable](#sortable)
   - [@SortableDefaults](#sortabledefaults)
@@ -232,10 +231,10 @@ GET /orders?status=OPEN&page=1&size=5
 }
 ```
 
-- The count query uses only the filter criteria (no `LIMIT`/`OFFSET`), so the total is accurate regardless of the requested page.
+- The count query uses the same filter fields and conditions without `ORDER BY` / `LIMIT` / `OFFSET`, so the total is accurate regardless of the requested page.
 - **Sorting.** `pageable.toPageRequest(Filter::class)` allowlists sort fields and caps the page size ([details](#pagerequestmapper)); without it, any entity property may be sorted on.
 - **Case-insensitive sorting.** `ignoreCase()` orders (e.g. `sort=name,asc,ignorecase`) are sorted by `LOWER(column)`.
-- Mandatory criteria (e.g. a tenant) go in `.where(order, Criteria.where("tenantId").`is`(tenantId))`; `@Embedded` properties on the result type are not supported.
+- Fixed conditions (e.g. a tenant) go in `.where(order[Order::tenantId] eq tenantId)`; `@Embedded` properties on the result type are not supported.
 
 ---
 
@@ -356,7 +355,7 @@ val order = table<Order>("o")
 
 val page: Pagination<Order> = queryBuilder
     .from(order)
-    .where(order, Criteria.where("tenantId").`is`(tenantId))          // mandatory criteria, placed first
+    .where(order[Order::tenantId] eq tenantId)                         // fixed condition, placed first
     .fetchPage<Order>(OrderFilter(customerId = "cust-42", statuses = listOf("PAID", "SHIPPED")), pageable)
 // WHERE (o.`tenant_id` = ? AND o.`customer_id` = ? AND o.`statuses` IN (?, ?)) ... LIMIT ...
 ```
@@ -400,7 +399,7 @@ val userDtos: Pagination<UserDto> = userPagination.map { UserDto(it) }
 
 ## Query Builder (R2DBC)
 
-`R2dbcQueryBuilder` (auto-configured when an `R2dbcEntityTemplate` bean exists) is the library's SQL query API. It runs `@QueryField` filters over a single table or a root table plus joined tables, pages and sorts the result, and maps each row into an entity or DTO. Tables and columns are referenced through entity classes and properties:
+`R2dbcQueryBuilder` (auto-configured when an `R2dbcEntityTemplate` bean exists) is the library's SQL query API for **grids**: list endpoints that filter, sort and page rows. It runs `@QueryField` filters over a single table or a root table plus joined tables, and maps each row into an entity or DTO. Tables and columns are referenced through entity classes and properties:
 
 ```kotlin
 @Service
@@ -419,7 +418,9 @@ class CustomerService(private val queryBuilder: R2dbcQueryBuilder) {
 
 The SQL is built with jOOQ and executed through Spring's `R2dbcEntityTemplate`, so entity mapping, converters and transactions work as with any other Spring Data R2DBC query. Supported databases: **MySQL**, **H2** and **PostgreSQL** (see [SQL Rendering and Binding](#sql-rendering-and-binding)).
 
-**1. Declare tables and joins.** The alias given to `table(...)` is what `@QueryField(table = …)` and `@SelectColumn(table = …)` refer to. Each join is followed by `.on(...)`, whose equalities compare a column of the joined table with a column of an already declared table, in either order.
+**Scope.** A grid query is one root table plus joins on a single key column each (`join`, `leftJoin`), filter-only child tables (`existsJoin`) and per-row aggregates (`aggregateJoin`), with typed fixed conditions, `@QueryField` filters, sorting and paging. It deliberately does not cover `GROUP BY` reports, `OR` across tables, column-to-column conditions, composite join keys or writes; use jOOQ or `DatabaseClient` directly for those.
+
+**1. Declare tables and joins.** The alias given to `table(...)` is what `@QueryField(table = …)` and `@SelectColumn(table = …)` refer to. Each join is followed by `.on(...)`, which compares one key column of the joined table with a column of an already declared table, in either order.
 
 ```kotlin
 val user = table<User>("u")
@@ -439,29 +440,40 @@ val query = queryBuilder
 | `table<Order>("o")` | the `Order` entity's table under alias `o` |
 | `order[Order::total]` | column `o.total`, resolved through the entity mapping |
 | `order[Order::total].path` | `"o.total"`, e.g. for `Sort.by(order[Order::total].path)` |
-| `a eq b` | ON equality; both sides must have the same type (`Long` vs `Long?` is allowed) |
-| `(a eq b) and (c eq d)` | several ON equalities (composite keys) |
+| `a eq b` | the ON key equality, one per join; both sides must have the same type (`Long` vs `Long?` is allowed) |
 
 | Builder | SQL | Columns selectable | Notes |
 |---|---|---|---|
 | `.join(t)` | `JOIN … ON …` | yes | one result row per joined row |
 | `.leftJoin(t)` | `LEFT OUTER JOIN … ON …` | yes | missing matches give `NULL`s |
-| `.existsJoin(t)` | `u.id IN (SELECT i.order_id FROM … WHERE <criteria>)` | no | semi-join: never duplicates rows; skipped when no criteria target it |
+| `.existsJoin(t)` | `o.id IN (SELECT i.order_id FROM … WHERE <conditions>)` | no | semi-join: never duplicates rows; skipped when no filter field or `.where` condition targets it |
 | `.aggregateJoin(t)` | correlated subqueries, see [Aggregates](#aggregates) | aggregates only | never joined as rows |
 
 The same entity can be joined twice under different aliases (e.g. `table<Order>("o")` and `table<Order>("s")`).
 
-**Extra ON conditions.** `onCriteria` adds value conditions on the joined table's own columns:
+**Conditions.** Fixed conditions are written with the same typed columns. The value must have the column's type:
+
+| Expression | SQL |
+|---|---|
+| `order[Order::status] eq "PAID"` / `ne` | `o.status = ?` / `<> ?` |
+| `order[Order::total] gt 100` / `ge` / `lt` / `le` | `o.total > ?` / `>=` / `<` / `<=` |
+| `order[Order::status] isIn listOf("NEW", "PAID")` / `notIn` | `o.status IN (?, ?)` / `NOT IN` |
+| `order[Order::deletedAt].isNull()` / `.isNotNull()` | `o.deleted_at IS NULL` / `IS NOT NULL` |
+| `(a eq x) and (b eq y)`, `(a eq x) or (b eq y)` | combined in parentheses |
+
+Each condition uses the columns of one table (combining tables with `and` / `or` throws); pass conditions on different tables to `.where(...)` separately. Values are converted to the property type (enums, custom converters).
+
+**Extra ON conditions.** `and = …` adds a condition on the joined table's own columns:
 
 ```kotlin
 queryBuilder.from(user)
-    .leftJoin(order).on(user[User::id] eq order[Order::userId], onCriteria = Criteria.where("status").`is`("PAID"))
+    .leftJoin(order).on(user[User::id] eq order[Order::userId], and = order[Order::status] eq "PAID")
 // LEFT OUTER JOIN `orders` AS o ON (u.`id` = o.`user_id` AND o.`status` = ?)
 ```
 
-| Join | Where `onCriteria` goes |
+| Join | Where the `and` condition goes |
 |---|---|
-| `join` / `leftJoin` | into `ON`. For `leftJoin` this keeps users without a paid order (with `NULL` columns); the same criteria via a filter field or `.where(order, …)` land in `WHERE` and drop them. |
+| `join` / `leftJoin` | into `ON`. For `leftJoin` this keeps users without a paid order (with `NULL` columns); the same condition via a filter field or `.where(…)` lands in `WHERE` and drops them. |
 | `existsJoin` | into the subquery; it does not activate the EXISTS filter on its own (filter fields / `.where` still do) |
 | `aggregateJoin` | into every aggregate subquery of that alias, always |
 
@@ -476,7 +488,7 @@ data class UserOrderFilter(
 )
 ```
 
-**3. Declare the result DTO** with `@SelectColumn`. Unannotated properties come from the root table; each value is selected `AS` the DTO property's column name.
+**3. Declare the result type.** It can be the root entity itself or a grid-row DTO whose properties are placed with `@SelectColumn` (and `@SelectAggregate`, see [Aggregates](#aggregates)). Unannotated properties come from the root table; each value is selected `AS` the DTO property's column name.
 
 ```kotlin
 data class UserOrderRow(
@@ -491,28 +503,28 @@ data class UserOrderRow(
 **4. Run it:**
 
 ```kotlin
-val rows: Flow<UserOrderRow> = query.fetch<UserOrderRow>(filter, Query.empty().sort(Sort.by("orderId")))
+val rows: Flow<UserOrderRow> = query.fetch<UserOrderRow>(filter, Sort.by("orderId"))     // all rows, e.g. an export
 val total: Long = query.count(filter)
 val page: Pagination<UserOrderRow> = query.fetchPage<UserOrderRow>(filter, pageable)
 
-// Mandatory criteria on a table, placed before its filter fields:
-query.where(user, Criteria.where("tenantId").`is`(tenantId)).fetchPage<UserOrderRow>(filter, pageable)
+// Fixed conditions, placed before the filter fields of their table:
+query.where(user[User::tenantId] eq tenantId).fetchPage<UserOrderRow>(filter, pageable)
 ```
 
 | Call | Returns |
 |---|---|
-| `.fetch<T>(filter, query, sort)` | `Flow<T>` (limit/offset/sort from `query`, extra `ignoreCase` orders via `sort`) |
-| `.fetchPage<T>(filter, pageable, query)` | `Pagination<T>` with the total count |
-| `.count(filter, query)` | `Long` |
+| `.fetchPage<T>(filter, pageable)` | `Pagination<T>`: one page plus the total count |
+| `.fetch<T>(filter, sort)` | `Flow<T>` with all matching rows (e.g. an export) |
+| `.count(filter)` | `Long` |
 
 `fetch(T::class, …)` / `fetchPage(T::class, …)` take the result type explicitly.
 
-- Conditions per table: `.where(...)` criteria AND (`query` criteria — root only) AND filter fields. `OR` chains inside criteria keep their precedence (jOOQ parenthesises nested conditions). Calling `.where` again for the same table ANDs the criteria.
+- Conditions per table: `.where(...)` conditions AND filter fields. `or` inside a condition keeps its precedence (jOOQ parenthesises nested conditions). Several conditions, or several `.where` calls, are ANDed.
 - Sort properties are DTO property names (`orderId`) or `alias.property` (`o.total`, or `order[Order::total].path`); anything that isn't a plain identifier is rejected.
-- `ignoreCase()` orders sort by `LOWER(column)` (ignored for aggregate properties). Spring's `Query.sort` rejects them, so pass such orders via the `sort` parameter of `fetch`, or through the `Pageable` of `fetchPage`.
+- `ignoreCase()` orders (`sort=name,asc,ignorecase`) sort by `LOWER(column)`; they are ignored for aggregate properties.
 - Every value is a bind parameter, converted to the entity property's type like Spring Data does (e.g. `0` → `0L` for a `Long` id, enums and custom converters applied).
 - Builders are immutable: every step returns a new builder, so a base query can be shared and extended.
-- Misuse fails fast with `IllegalArgumentException`: an ON condition that doesn't use the joined table, a column compared with another column of its own table, or a table that was not declared (or was declared under another entity type).
+- Misuse fails fast with `IllegalArgumentException`: an ON condition that doesn't use the joined table or compares two of its own columns, an extra ON condition (`and = …`) on another table, a condition combining columns of different tables, or a table that was not declared (or was declared under another entity type).
 
 **Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the filter class and map the `Pageable` with it. `field` may be a DTO property or `alias.property`:
 
@@ -567,11 +579,11 @@ WHERE (SELECT count(*) FROM `orders` AS s WHERE (s.`status` = ? AND s.`user_id` 
 ORDER BY `total_sum` DESC
 ```
 
-- **Plain criteria on an aggregate alias** (filter fields or `.where(stats, …)`) restrict the rows being aggregated, not the root rows. To filter root rows by related rows, add a separate `existsJoin` alias for the same table.
+- **Plain conditions on an aggregate alias** (filter fields or `.where(stats[Order::status] eq …)`) restrict the rows being aggregated, not the root rows. To filter root rows by related rows, add a separate `existsJoin` alias for the same table.
 - Aggregate filter operators: `EQ`, `NE`, `GT`, `GTE`, `LT`, `LTE`, `IN`, `NOT_IN`, `IS_NULL`/`NOT_EXISTS`, `IS_NOT_NULL`/`EXISTS`. `LIKE`-style operators throw `UnsupportedOperationException`.
 - Over no rows `COUNT` is `0`; `SUM`, `AVG`, `MIN`, `MAX` are `NULL`, so declare those DTO properties nullable.
 - Sorting by an aggregate DTO property orders by its select alias, so the subquery is not repeated.
-- Each aggregate used in both the select list and a filter runs as its own subquery; index the correlation column (e.g. `orders.user_id`). For report-style grouping, see [Building Your Own jOOQ Queries](#building-your-own-jooq-queries).
+- Each aggregate used in both the select list and a filter runs as its own subquery; index the correlation column (e.g. `orders.user_id`). For report-style grouping across many dimensions, prefer a view or a hand-written query.
 
 ### SQL Rendering and Binding
 
@@ -585,8 +597,8 @@ Each statement is rendered with a jOOQ `DSLContext` derived from the template's 
 
 Other dialects (Oracle, SQL Server) throw `UnsupportedOperationException`.
 
-1. Filter fields, `.where` / `Query` criteria and `onCriteria` become jOOQ conditions (`JooqConditionMapper`); values are wrapped as bind parameters, never inlined. `LIMIT` / `OFFSET` are inlined numbers.
-2. Table and column names come from the entity mapping (`JooqMetadataResolver`) with Spring's quoting and letter casing; raw names must be plain identifiers.
+1. Filter fields, `.where` conditions and extra `ON` conditions become jOOQ conditions; values are wrapped as bind parameters, never inlined. `LIMIT` / `OFFSET` are inlined numbers.
+2. Table and column names come from the entity mapping with Spring's quoting and letter casing; raw names must be plain identifiers.
 3. jOOQ renders the SQL text and returns the bind values in text order — including the values of an aggregate subquery that appears both in the select list and in `WHERE`.
 4. Spring runs the SQL and binds the values by position.
 
@@ -597,11 +609,10 @@ queryBuilder
     .from(user)
     .join(order).on(user[User::id] eq order[Order::userId])
     .existsJoin(item).on(order[Order::id] eq item[Item::orderId])
-    .where(user, Criteria.where("id").greaterThan(0))
-    .where(order, Criteria.where("total").greaterThan(1))
-    .fetch<UserOrderRow>(
+    .where(user[User::id] gt 0L, order[Order::total] gt 1)
+    .fetchPage<UserOrderRow>(
         UserOrderFilter(name = "ali", status = "PAID", sku = "A"),
-        Query.empty().sort(Sort.by("orderId")).limit(5).offset(10)
+        PageRequest.of(2, 5, Sort.by("orderId"))
     )
 ```
 
@@ -611,63 +622,8 @@ FROM `users` AS u JOIN `orders` AS o ON u.`id` = o.`user_id`
 WHERE (u.`id` > ? AND u.`name` LIKE ? AND o.`total` > ? AND o.`status` = ?
   AND o.`id` IN (SELECT i.`order_id` FROM `items` AS i WHERE i.`sku` = ?))
 ORDER BY o.`id` ASC LIMIT 5 OFFSET 10
--- binds: [0, "%ali%", 1, "PAID", "A"]
+-- binds: [0, "%ali%", 1, "PAID", "A"]; the count query is the same WHERE without ORDER BY / LIMIT
 ```
-
-### Building Your Own jOOQ Queries
-
-For queries `fetch` does not cover (e.g. `GROUP BY` reports), `select(...)` turns a builder into a plain jOOQ query over the same tables: `SELECT <fields> FROM root JOIN …` with the `join` / `leftJoin` tables, their `onCriteria` and the `.where(...)` criteria applied. Filters, DTO mapping and paging are not applied, and `existsJoin` / `aggregateJoin` tables are rejected. `field(column)` gives the jOOQ field of a column.
-
-The query is rendered for the template's database (same dialect and bind markers as above), so it can be run with `DatabaseClient`, binding by position:
-
-```kotlin
-@Component
-class OrderReport(
-    private val queryBuilder: R2dbcQueryBuilder,
-    private val template: R2dbcEntityTemplate
-) {
-    private val user = table<User>("u")
-    private val order = table<Order>("o")
-
-    suspend fun revenueByUser(tenantId: Long): List<Pair<String, BigDecimal>> {
-        val query = queryBuilder
-            .from(user)
-            .join(order).on(user[User::id] eq order[Order::userId])
-            .where(user, Criteria.where("tenantId").`is`(tenantId))
-
-        val name = query.field(user[User::name])
-        val total = query.field(order[Order::total])
-
-        val select = query
-            .select(name, DSL.sum(total.coerce(BigDecimal::class.java)).`as`("revenue"))
-            .and(total.gt(0))
-            .groupBy(name)
-            .orderBy(DSL.field(DSL.name("revenue")).desc())
-
-        return select.bindValues
-            .foldIndexed(template.databaseClient.sql(select.sql)) { index, sql, value -> sql.bind(index, value!!) }
-            .map { row -> row.get("name", String::class.java)!! to row.get("revenue", BigDecimal::class.java)!! }
-            .all()
-            .asFlow()
-            .toList()
-    }
-}
-```
-
-`@QueryField` filters and Spring `Criteria` can be turned into extra conditions with `JooqConditionMapper` and `JooqMetadataResolver`:
-
-```kotlin
-val metadata = JooqMetadataResolver(template)
-val conditions = JooqConditionMapper(template.converter)
-val orders = JooqConditionMapper.Target(metadata.entity(Order::class)) { metadata.field(Order::class, "o", it) }
-
-val filterConditions = QueryMapper.activeFields(filter).map { conditions.map(it, orders) }
-val paid = conditions.map(Criteria.where("status").`is`("PAID"), orders)    // null for empty criteria
-
-query.select(name, DSL.count()).and(DSL.and(filterConditions)).and(paid ?: DSL.noCondition()).groupBy(name)
-```
-
-The auto-configured `DSLContext` bean (MySQL dialect, `?` markers) is a separate, plain jOOQ context for queries written from scratch.
 
 ---
 
@@ -865,7 +821,6 @@ All beans are registered by Spring Boot auto-configuration and back off when you
 | `R2dbcQueryBuilder` | an `R2dbcEntityTemplate` bean exists |
 | `R2dbcDbPurger` | a `DatabaseClient` bean exists |
 | `TransactionalManager` | Spring's reactive transaction support is on the classpath |
-| `DSLContext` (jOOQ, MySQL dialect, `?` markers) | jOOQ is on the classpath (always, as a dependency of this library) |
 | `R2dbcCustomConversions` (JSON converters) | a `ConnectionFactory` and a Jackson 3 `ObjectMapper` bean exist |
 
 `PageRequestMapper` and `MongoQueryMapper` are plain singletons (`object`s) and need no bean.

@@ -11,9 +11,7 @@ import io.github.kostack.database_tools.query_mapper.extension.toPageRequest
 import io.r2dbc.spi.ConnectionFactories
 import io.r2dbc.spi.ConnectionFactory
 import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.runBlocking
-import org.jooq.impl.DSL
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -22,7 +20,6 @@ import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.relational.core.mapping.Embedded
-import org.springframework.data.relational.core.query.Criteria
 import org.springframework.data.relational.core.query.Query
 import org.springframework.r2dbc.core.await
 import org.testcontainers.junit.jupiter.Container
@@ -138,7 +135,12 @@ abstract class R2dbcJoinQueryContract {
       .join(JoinOrder::class, "o", "u.id" to "userId")
       .join(JoinItem::class, "i", "o.id" to "order_id", mode = JoinMode.EXISTS)
 
-  private val byOrder = Query.empty().sort(Sort.by("orderId"))
+  private val user = table<JoinUser>("u")
+  private val order = table<JoinOrder>("o")
+  private val item = table<JoinItem>("i")
+  private val stats = table<JoinOrder>("s")
+
+  private val byOrder = Sort.by("orderId")
 
   @BeforeEach
   fun setUp() =
@@ -161,9 +163,9 @@ abstract class R2dbcJoinQueryContract {
 
   private fun select(
     filter: Any? = null,
-    query: Query = byOrder,
-    required: Map<String, Criteria> = emptyMap()
-  ) = runBlocking { joinQuery.select(spec, UserOrderRow::class, filter, query, required).toList() }
+    sort: Sort = byOrder,
+    required: List<ColumnCondition> = emptyList()
+  ) = runBlocking { joinQuery.select(spec, UserOrderRow::class, filter, required, sort).toList() }
 
   @Test
   fun `inner join fetches joined columns into the dto`() {
@@ -211,7 +213,7 @@ abstract class R2dbcJoinQueryContract {
         ).join(JoinOrder::class, "o", "u.id" to "userId", mode = JoinMode.LEFT)
     val rows =
       runBlocking {
-        joinQuery.select(leftSpec, UserMaybeOrderRow::class, query = Query.empty().sort(Sort.by("id", "o.id"))).toList()
+        joinQuery.select(leftSpec, UserMaybeOrderRow::class, sort = Sort.by("id", "o.id")).toList()
       }
 
     assertEquals(4, rows.size)
@@ -219,26 +221,21 @@ abstract class R2dbcJoinQueryContract {
   }
 
   @Test
-  fun `required OR criteria keep precedence against the filter`() {
-    val required =
-      Criteria
-        .where("name")
-        .`is`("alice")
-        .or("name")
-        .`is`("bob")
-    val rows = select(UserOrderFilter(status = "NEW"), required = mapOf("u" to required))
+  fun `required OR conditions keep precedence against the filter`() {
+    val required = (user[JoinUser::name] eq "alice") or (user[JoinUser::name] eq "bob")
+    val rows = select(UserOrderFilter(status = "NEW"), required = listOf(required))
     assertEquals(listOf(10L), rows.map { it.orderId })
   }
 
   @Test
-  fun `required criteria on a joined alias`() {
-    val rows = select(required = mapOf("o" to Criteria.where("status").`is`("PAID")))
+  fun `required conditions on a joined alias`() {
+    val rows = select(required = listOf(order[JoinOrder::status] eq "PAID"))
     assertEquals(listOf(11L, 12L), rows.map { it.orderId })
   }
 
   @Test
-  fun `query criteria apply to the root table`() {
-    val rows = select(query = Query.query(Criteria.where("name").`is`("bob")))
+  fun `required conditions on the root table`() {
+    val rows = select(required = listOf(user[JoinUser::name] eq "bob"))
     assertEquals(listOf(12L), rows.map { it.orderId })
   }
 
@@ -276,14 +273,14 @@ abstract class R2dbcJoinQueryContract {
 
   @Test
   fun `sort by alias-qualified column`() {
-    val rows = select(query = Query.empty().sort(Sort.by(Sort.Direction.DESC, "o.total")))
+    val rows = select(sort = Sort.by(Sort.Direction.DESC, "o.total"))
     assertEquals(listOf(12L, 10L, 11L), rows.map { it.orderId })
   }
 
   @Test
   fun `rejects unsafe sort property`() {
     assertThrows<IllegalArgumentException> {
-      select(query = Query.empty().sort(Sort.by("name; DROP TABLE join_user")))
+      select(sort = Sort.by("name; DROP TABLE join_user"))
     }
   }
 
@@ -313,8 +310,8 @@ abstract class R2dbcJoinQueryContract {
 
   private fun stats(
     filter: Any? = null,
-    query: Query = Query.empty().sort(Sort.by("id"))
-  ) = runBlocking { joinQuery.select(statsSpec, UserStatsRow::class, filter, query).toList() }
+    sort: Sort = Sort.by("id")
+  ) = runBlocking { joinQuery.select(statsSpec, UserStatsRow::class, filter, sort = sort).toList() }
 
   @Test
   fun `selects all five aggregates per root row`() {
@@ -383,7 +380,7 @@ abstract class R2dbcJoinQueryContract {
     val rows =
       runBlocking {
         joinQuery
-          .select(mixed, OrderWithUserStats::class, Filter(status = "NEW", sku = "A", minOrders = 2), byOrder)
+          .select(mixed, OrderWithUserStats::class, Filter(status = "NEW", sku = "A", minOrders = 2), sort = byOrder)
           .toList()
       }
 
@@ -436,17 +433,17 @@ abstract class R2dbcJoinQueryContract {
 
   // --- extra ON conditions ---
 
-  private val paid = Criteria.where("status").`is`("PAID")
+  private val paid = order[JoinOrder::status] eq "PAID"
 
   @Test
   fun `left join onCriteria keeps unmatched root rows, where criteria do not`() {
-    val sorted = Query.empty().sort(Sort.by("id"))
+    val sorted = Sort.by("id")
     val onSpec =
       JoinSpec
         .from(
           JoinUser::class,
           "u"
-        ).join(JoinOrder::class, "o", "u.id" to "userId", mode = JoinMode.LEFT, onCriteria = paid)
+        ).join(JoinOrder::class, "o", "u.id" to "userId", mode = JoinMode.LEFT, onCondition = paid)
     val plainSpec =
       JoinSpec
         .from(
@@ -454,10 +451,10 @@ abstract class R2dbcJoinQueryContract {
           "u"
         ).join(JoinOrder::class, "o", "u.id" to "userId", mode = JoinMode.LEFT)
 
-    val viaOn = runBlocking { joinQuery.select(onSpec, UserMaybeOrderRow::class, query = sorted).toList() }
+    val viaOn = runBlocking { joinQuery.select(onSpec, UserMaybeOrderRow::class, sort = sorted).toList() }
     val viaWhere =
       runBlocking {
-        joinQuery.select(plainSpec, UserMaybeOrderRow::class, query = sorted, required = mapOf("o" to paid)).toList()
+        joinQuery.select(plainSpec, UserMaybeOrderRow::class, sort = sorted, required = listOf(paid)).toList()
       }
 
     assertEquals(
@@ -474,9 +471,17 @@ abstract class R2dbcJoinQueryContract {
 
   @Test
   fun `inner join onCriteria combines with filters`() {
-    val onSpec = JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "o", "u.id" to "userId", onCriteria = paid)
+    val onSpec = JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "o", "u.id" to "userId", onCondition = paid)
     val rows =
-      runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(minTotal = 100), byOrder).toList() }
+      runBlocking {
+        joinQuery
+          .select(
+            onSpec,
+            UserOrderRow::class,
+            UserOrderFilter(minTotal = 100),
+            sort = byOrder
+          ).toList()
+      }
     assertEquals(listOf(12L), rows.map { it.orderId })
   }
 
@@ -491,12 +496,13 @@ abstract class R2dbcJoinQueryContract {
           "i",
           "o.id" to "orderId",
           mode = JoinMode.EXISTS,
-          onCriteria = Criteria.where("id").greaterThanOrEquals(103)
+          onCondition = item[JoinItem::id] ge 103L
         )
 
     val filtered =
-      runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(sku = "A"), byOrder).toList() }
-    val unfiltered = runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(), byOrder).toList() }
+      runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(sku = "A"), sort = byOrder).toList() }
+    val unfiltered =
+      runBlocking { joinQuery.select(onSpec, UserOrderRow::class, UserOrderFilter(), sort = byOrder).toList() }
 
     assertEquals(listOf(12L), filtered.map { it.orderId })
     assertEquals(3, unfiltered.size)
@@ -509,9 +515,16 @@ abstract class R2dbcJoinQueryContract {
         .from(
           JoinUser::class,
           "u"
-        ).join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE, onCriteria = paid)
+        ).join(
+          JoinOrder::class,
+          "s",
+          "u.id" to "userId",
+          mode = JoinMode.AGGREGATE,
+          onCondition =
+            stats[JoinOrder::status] eq "PAID"
+        )
     val rows =
-      runBlocking { joinQuery.select(onSpec, UserStatsRow::class, query = Query.empty().sort(Sort.by("id"))).toList() }
+      runBlocking { joinQuery.select(onSpec, UserStatsRow::class, sort = Sort.by("id")).toList() }
 
     assertEquals(listOf(1L, 1L, 0L), rows.map { it.orderCount })
     assertEquals(listOf(50L, 200L, null), rows.map { it.totalSum })
@@ -615,9 +628,6 @@ abstract class R2dbcJoinQueryContract {
   }
 
   private val queryBuilder by lazy { R2dbcQueryBuilder(template) }
-  private val user = table<JoinUser>("u")
-  private val order = table<JoinOrder>("o")
-  private val item = table<JoinItem>("i")
 
   @Test
   fun `query builder left joins and fetches a page`() {
@@ -643,9 +653,9 @@ abstract class R2dbcJoinQueryContract {
         .on(order[JoinOrder::userId] eq user[JoinUser::id]) // either order
         .existsJoin(item)
         .on(order[JoinOrder::id] eq item[JoinItem::orderId])
-        .where(order, Criteria.where("total").greaterThan(60))
+        .where(order[JoinOrder::total] gt 60)
 
-    val rows = runBlocking { query.fetch<UserOrderRow>(UserOrderFilter(sku = "A"), byOrder).toList() }
+    val rows = runBlocking { query.fetch<UserOrderRow>(UserOrderFilter(sku = "A"), Sort.by("orderId")).toList() }
 
     assertEquals(listOf(10L, 12L), rows.map { it.orderId })
     assertEquals(2L, runBlocking { query.count(UserOrderFilter(sku = "A")) })
@@ -660,7 +670,7 @@ abstract class R2dbcJoinQueryContract {
           .from(user)
           .aggregateJoin(stats)
           .on(user[JoinUser::id] eq stats[JoinOrder::userId])
-          .fetch<UserStatsRow>(query = Query.empty().sort(Sort.by("id")))
+          .fetch<UserStatsRow>(sort = Sort.by("id"))
           .toList()
       }
 
@@ -678,33 +688,46 @@ abstract class R2dbcJoinQueryContract {
   }
 
   @Test
-  fun `query builder select builds a plain jOOQ query for the database`() {
+  fun `query builder typed conditions combine with filters`() {
     val query =
       queryBuilder
         .from(user)
         .join(order)
         .on(user[JoinUser::id] eq order[JoinOrder::userId])
-        .where(order, Criteria.where("status").`is`("PAID"))
-    val name = query.field(user[JoinUser::name])
-    val select = query.select(name, DSL.count().`as`("orders")).groupBy(name).orderBy(name)
+        .where(order[JoinOrder::status] isIn listOf("NEW", "PAID"), order[JoinOrder::total] lt 150)
+        .where((user[JoinUser::name] eq "alice") or (user[JoinUser::name] ne "alice"))
 
-    val rows =
-      runBlocking {
-        select.bindValues
-          .foldIndexed(template.databaseClient.sql(select.sql)) { index, sql, value -> sql.bind(index, value!!) }
-          .map { row -> row.get(0, String::class.java)!! to (row.get(1) as Number).toLong() }
-          .all()
-          .asFlow()
-          .toList()
-      }
+    val rows = runBlocking { query.fetch<UserOrderRow>(UserOrderFilter(name = "ali"), byOrder).toList() }
 
-    assertEquals(listOf("alice" to 1L, "bob" to 1L), rows)
+    assertEquals(listOf(10L, 11L), rows.map { it.orderId })
+    assertEquals(0L, runBlocking { query.where(user[JoinUser::name].isNull()).count() })
   }
 
   @Test
-  fun `query builder select rejects subquery joins`() {
-    val query = queryBuilder.from(user).existsJoin(item).on(user[JoinUser::id] eq item[JoinItem::orderId])
-    assertThrows<IllegalArgumentException> { query.select(DSL.count()) }
+  fun `query builder left join extra ON condition keeps unmatched rows`() {
+    val rows =
+      runBlocking {
+        queryBuilder
+          .from(user)
+          .leftJoin(order)
+          .on(user[JoinUser::id] eq order[JoinOrder::userId], and = order[JoinOrder::status] eq "PAID")
+          .fetch<UserMaybeOrderRow>(sort = Sort.by("id"))
+          .toList()
+      }
+
+    assertEquals(listOf("PAID", "PAID", null), rows.map { it.status })
+  }
+
+  @Test
+  fun `query builder rejects conditions mixing tables`() {
+    assertThrows<IllegalArgumentException> { (user[JoinUser::name] eq "a") or (order[JoinOrder::status] eq "PAID") }
+    assertThrows<IllegalArgumentException> {
+      queryBuilder.from(user).leftJoin(order).on(
+        user[JoinUser::id] eq order[JoinOrder::userId],
+        and =
+          user[JoinUser::name] eq "a"
+      )
+    }
   }
 
   @Test
@@ -713,7 +736,7 @@ abstract class R2dbcJoinQueryContract {
       queryBuilder
         .from(
           user
-        ).where(order, Criteria.where("total").greaterThan(1))
+        ).where(order[JoinOrder::total] gt 1)
     }
   }
 }

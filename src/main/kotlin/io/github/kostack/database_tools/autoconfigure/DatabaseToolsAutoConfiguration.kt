@@ -5,9 +5,6 @@ import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
 import io.github.kostack.database_tools.r2dbc.query_builder.R2dbcQueryBuilder
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
-import org.jooq.DSLContext
-import org.jooq.SQLDialect
-import org.jooq.impl.DSL
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -70,14 +67,5 @@ class DatabaseToolsAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     fun transactionalManager(): TransactionalManager = TransactionalManager()
-  }
-
-  @Configuration(proxyBeanMethods = false)
-  @ConditionalOnClass(name = ["org.jooq.DSLContext"])
-  class JooqConfiguration {
-    // MySQL R2DBC binds positional `?` markers, jOOQ's default for rendered SQL.
-    @Bean
-    @ConditionalOnMissingBean
-    fun jooqDsl(): DSLContext = DSL.using(SQLDialect.MYSQL)
   }
 }

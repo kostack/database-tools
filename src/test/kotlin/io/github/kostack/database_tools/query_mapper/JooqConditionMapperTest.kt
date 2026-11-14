@@ -10,7 +10,6 @@ import org.junit.jupiter.api.assertThrows
 import org.springframework.data.annotation.Id
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.r2dbc.dialect.MySqlDialect
-import org.springframework.data.relational.core.query.Criteria
 import org.springframework.r2dbc.core.DatabaseClient
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -155,28 +154,23 @@ class JooqConditionMapperTest {
   }
 
   @Test
-  fun `criteria keep OR precedence, ignoreCase and type conversion`() {
-    val criteria =
-      Criteria
-        .where("id")
-        .greaterThan(0)
-        .and(
-          Criteria
-            .where("name")
-            .`is`("a")
-            .ignoreCase(true)
-            .or("name")
-            .`is`("b")
-        )
+  fun `compare converts the value to the given property type`() {
+    val type =
+      template.converter.mappingContext
+        .getRequiredPersistentEntity(
+          Person::class.java
+        ).getRequiredPersistentProperty("status")
+        .typeInformation
+    val condition =
+      mapper.compare(
+        DSL.field(DSL.name("p", "status")),
+        QueryOperator.IN,
+        listOf(Status.ACTIVE),
+        type,
+        "test"
+      )
 
-    val condition = mapper.map(criteria, target)!!
-
-    assertEquals("(`p`.`id` > ? and (upper(`p`.`name`) = upper(?) or `p`.`name` = ?))", sql(condition))
-    assertEquals(listOf<Any?>(0L, "a", "b"), binds(condition))
-  }
-
-  @Test
-  fun `empty criteria map to null`() {
-    assertEquals(null, mapper.map(Criteria.empty(), target))
+    assertEquals("`p`.`status` in (?)", sql(condition))
+    assertEquals(listOf<Any?>("ACTIVE"), binds(condition))
   }
 }

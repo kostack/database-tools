@@ -16,7 +16,7 @@ import kotlin.reflect.KClass
  * so the SQL refers to exactly the tables and columns Spring Data itself uses.
  * Aliases are rendered unquoted; join query aliases must be plain identifiers.
  */
-class JooqMetadataResolver(
+internal class JooqMetadataResolver(
   private val template: R2dbcEntityTemplate
 ) {
   private val identifiers by lazy { template.dataAccessStrategy.dialect.identifierProcessing }

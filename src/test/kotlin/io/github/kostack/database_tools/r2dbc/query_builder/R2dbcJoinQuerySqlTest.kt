@@ -5,10 +5,9 @@ import io.github.kostack.database_tools.query_mapper.annotation.SelectAggregate
 import io.github.kostack.database_tools.query_mapper.annotation.SelectColumn
 import io.r2dbc.spi.ConnectionFactories
 import org.junit.jupiter.api.Test
+import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
 import org.springframework.data.r2dbc.dialect.MySqlDialect
-import org.springframework.data.relational.core.query.Criteria
-import org.springframework.data.relational.core.query.Query
 import org.springframework.r2dbc.core.DatabaseClient
 import org.springframework.r2dbc.core.binding.BindTarget
 import kotlin.test.assertEquals
@@ -22,6 +21,9 @@ class R2dbcJoinQuerySqlTest {
         MySqlDialect.INSTANCE
       )
     )
+
+  private val user = table<JoinUser>("u")
+  private val order = table<JoinOrder>("o")
 
   private val spec =
     JoinSpec
@@ -63,15 +65,11 @@ class R2dbcJoinQuerySqlTest {
       joinQuery.prepare(
         spec,
         UserOrderFilter(name = "ali", status = "PAID", sku = "A"),
-        Query
-          .empty()
-          .sort(
-            org.springframework.data.domain.Sort
-              .by("orderId")
-          ).limit(5)
-          .offset(10),
-        mapOf("u" to Criteria.where("id").greaterThan(0), "o" to Criteria.where("total").greaterThan(1)),
-        UserOrderRow::class
+        listOf(user[JoinUser::id] gt 0L, order[JoinOrder::total] gt 1),
+        UserOrderRow::class,
+        Sort.by("orderId"),
+        limit = 5,
+        offset = 10
       )
 
     assertEquals(
@@ -96,13 +94,7 @@ class R2dbcJoinQuerySqlTest {
       joinQuery.prepare(
         spec,
         UserOrderFilter(status = "PAID"),
-        Query
-          .empty()
-          .sort(
-            org.springframework.data.domain.Sort
-              .by("orderId")
-          ).limit(5),
-        emptyMap(),
+        emptyList(),
         resultType = null
       )
 
@@ -127,12 +119,9 @@ class R2dbcJoinQuerySqlTest {
       joinQuery.prepare(
         statsSpec,
         UserStatsFilter(status = "PAID", minOrders = 2),
-        Query.empty().sort(
-          org.springframework.data.domain.Sort
-            .by("avgTotal")
-        ),
-        mapOf("u" to Criteria.where("id").greaterThan(0)),
-        Row::class
+        listOf(user[JoinUser::id] gt 0L),
+        Row::class,
+        Sort.by("avgTotal")
       )
 
     val count = "SELECT count(*) FROM `join_order` AS s WHERE (s.`status` = ? AND s.`user_id` = u.`id`)"
@@ -168,17 +157,17 @@ class R2dbcJoinQuerySqlTest {
           "o",
           "u.id" to "userId",
           mode = JoinMode.LEFT,
-          onCriteria = Criteria.where("total").greaterThan(60)
+          onCondition = order[JoinOrder::total] gt 60
         ).join(
           JoinOrder::class,
           "s",
           "u.id" to "userId",
           mode = JoinMode.AGGREGATE,
-          onCriteria = Criteria.where("status").`is`("PAID")
+          onCondition = table<JoinOrder>("s")[JoinOrder::status] eq "PAID"
         )
 
     val operation =
-      joinQuery.prepare(onSpec, null, Query.empty(), mapOf("u" to Criteria.where("id").greaterThan(0)), Row::class)
+      joinQuery.prepare(onSpec, null, listOf(user[JoinUser::id] gt 0L), Row::class)
 
     assertEquals(
       "SELECT u.`id` AS `id`, o.`status` AS `status`, " +
@@ -204,16 +193,16 @@ class R2dbcJoinQuerySqlTest {
     val statsSpec =
       JoinSpec.from(JoinUser::class, "u").join(JoinOrder::class, "s", "u.id" to "userId", mode = JoinMode.AGGREGATE)
     val sort =
-      org.springframework.data.domain.Sort.by(
-        org.springframework.data.domain.Sort.Order
+      Sort.by(
+        Sort.Order
           .asc("name")
           .ignoreCase(),
-        org.springframework.data.domain.Sort.Order
+        Sort.Order
           .desc("lastStatus")
           .ignoreCase()
       )
 
-    val sql = joinQuery.prepare(statsSpec, null, Query.empty(), emptyMap(), Row::class, sort).toQuery()
+    val sql = joinQuery.prepare(statsSpec, null, emptyList(), Row::class, sort).toQuery()
 
     assertEquals("ORDER BY lower(u.`name`) ASC, `last_status` DESC", sql.substringAfter(" FROM `join_user` AS u "))
   }

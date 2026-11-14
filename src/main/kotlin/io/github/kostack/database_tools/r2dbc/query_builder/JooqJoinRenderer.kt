@@ -21,25 +21,26 @@ internal class JooqJoinRenderer(
   /**
    * `SELECT <select> FROM root JOIN ... ON ...`; an empty [select] renders `SELECT *`.
    *
-   * @param onCriteria extra `ON` condition of a join (its mapped `onCriteria`), ANDed after the column pairs.
+   * @param onCondition extra `ON` condition of a join (its mapped `onCondition`), ANDed after the column pairs.
    */
   fun from(
     spec: JoinSpec,
     select: Collection<SelectFieldOrAsterisk> = emptyList(),
-    onCriteria: (JoinSpec.Join) -> Condition? = { null }
-  ): SelectJoinStep<Record> = dsl.select(select).from(joinTree(spec, onCriteria))
+    onCondition: (JoinSpec.Join) -> Condition? = { null }
+  ): SelectJoinStep<Record> = dsl.select(select).from(joinTree(spec, onCondition))
 
   /** The root table with every `INNER` / `LEFT` join applied, in declaration order. */
   fun joinTree(
     spec: JoinSpec,
-    onCriteria: (JoinSpec.Join) -> Condition? = { null }
+    onCondition: (JoinSpec.Join) -> Condition? = { null }
   ): Table<*> =
     spec.joins
       .filter { it.mode.joined }
       .fold(metadata.table(spec.root, spec.rootAlias)) { from, join ->
         val table = metadata.table(join.entity, join.alias)
-        val columns = join.on.map { (left, right) -> reference(spec, left).eq(field(spec, join.alias, right)) }
-        val on = DSL.and(columns + listOfNotNull(onCriteria(join)))
+        val (left, right) = join.on
+        val keys = reference(spec, left).eq(field(spec, join.alias, right))
+        val on = onCondition(join)?.let { keys.and(it) } ?: keys
         if (join.mode == JoinMode.LEFT) from.leftOuterJoin(table).on(on) else from.join(table).on(on)
       }
 

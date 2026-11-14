@@ -17,19 +17,15 @@ import kotlinx.coroutines.reactor.awaitSingle
 import org.jooq.Condition
 import org.jooq.DSLContext
 import org.jooq.Field
-import org.jooq.Record
 import org.jooq.SQLDialect
 import org.jooq.Select
-import org.jooq.SelectConditionStep
 import org.jooq.SelectField
-import org.jooq.SelectFieldOrAsterisk
 import org.jooq.SortField
 import org.jooq.Table
 import org.jooq.conf.ParamType
 import org.jooq.conf.RenderKeywordCase
 import org.jooq.conf.Settings
 import org.jooq.impl.DSL
-import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
 import org.springframework.data.domain.Sort
 import org.springframework.data.r2dbc.core.R2dbcEntityTemplate
@@ -39,8 +35,6 @@ import org.springframework.data.r2dbc.dialect.PostgresDialect
 import org.springframework.data.r2dbc.dialect.R2dbcDialect
 import org.springframework.data.relational.core.mapping.RelationalPersistentEntity
 import org.springframework.data.relational.core.mapping.RelationalPersistentProperty
-import org.springframework.data.relational.core.query.CriteriaDefinition
-import org.springframework.data.relational.core.query.Query
 import org.springframework.data.relational.core.sql.SqlIdentifier
 import org.springframework.r2dbc.core.PreparedOperation
 import org.springframework.r2dbc.core.binding.BindTarget
@@ -51,8 +45,8 @@ import kotlin.reflect.KClass
  * filters against a root table plus joined tables (see [JoinSpec]) and maps each row into a DTO whose
  * properties are placed with [SelectColumn].
  *
- * Criteria for each alias are combined as `required AND (query criteria, root only) AND mapped filter`.
- * All values are bound parameters; criteria column names are mapped through each table's entity.
+ * Conditions for each alias are combined as `required AND mapped filter`.
+ * All values are bound parameters; column names are mapped through each table's entity.
  * With `INNER`/`LEFT` one-to-many joins every joined row is one result (and one count).
  */
 internal class JoinQueryEngine(
@@ -65,22 +59,22 @@ internal class JoinQueryEngine(
   private val conditions = JooqConditionMapper(template.converter)
 
   /**
-   * Selects [resultType] rows. Limit and offset come from [query]; ordering is `query.sort` followed by [sort].
-   * Sort properties are DTO property names or `alias.column`.
+   * Selects [resultType] rows, ordered by [sort] (DTO property names or `alias.column`; `ignoreCase()` orders
+   * are rendered as `LOWER(column)`), optionally paged with [limit] / [offset].
    *
-   * @param required extra criteria keyed by table alias, placed first for that alias.
-   * @param sort extra ordering; unlike `Query.sort` it may contain `ignoreCase()` orders (rendered as `LOWER(column)`).
+   * @param required fixed conditions, each on one table, placed first for that table.
    */
   fun <T : Any> select(
     spec: JoinSpec,
     resultType: KClass<T>,
     filter: Any? = null,
-    query: Query = Query.empty(),
-    required: Map<String, CriteriaDefinition> = emptyMap(),
-    sort: Sort = Sort.unsorted()
+    required: List<ColumnCondition> = emptyList(),
+    sort: Sort = Sort.unsorted(),
+    limit: Int? = null,
+    offset: Long = 0
   ): Flow<T> =
     template
-      .query(prepare(spec, filter, query, required, resultType, sort), resultType.java)
+      .query(prepare(spec, filter, required, resultType, sort, limit, offset), resultType.java)
       .all()
       .asFlow()
 
@@ -88,11 +82,10 @@ internal class JoinQueryEngine(
   suspend fun count(
     spec: JoinSpec,
     filter: Any? = null,
-    query: Query = Query.empty(),
-    required: Map<String, CriteriaDefinition> = emptyMap()
+    required: List<ColumnCondition> = emptyList()
   ): Long =
     template.databaseClient
-      .sql(prepare(spec, filter, query, required, resultType = null))
+      .sql(prepare(spec, filter, required, resultType = null))
       .map { row -> (row.get(0) as Number).toLong() }
       .one()
       .awaitSingle()
@@ -107,14 +100,14 @@ internal class JoinQueryEngine(
     resultType: KClass<T>,
     pageable: Pageable,
     filter: Any? = null,
-    query: Query = Query.empty(),
-    required: Map<String, CriteriaDefinition> = emptyMap()
+    required: List<ColumnCondition> = emptyList()
   ): Pagination<T> =
     coroutineScope {
-      // Paging goes into the query; the sort is passed separately because Spring's Query rejects ignoreCase orders.
-      val paged = query.with(PageRequest.of(pageable.pageNumber, pageable.pageSize))
-      val items = async { select(spec, resultType, filter, paged, required, pageable.sort).toList() }
-      val total = async { count(spec, filter, query, required) }
+      val items =
+        async {
+          select(spec, resultType, filter, required, pageable.sort, pageable.pageSize, pageable.offset).toList()
+        }
+      val total = async { count(spec, filter, required) }
 
       Pagination(
         content = items.await(),
@@ -124,49 +117,16 @@ internal class JoinQueryEngine(
       )
     }
 
-  /**
-   * `SELECT <select> FROM root JOIN ...` with the `INNER` / `LEFT` joins of [spec] (including their `onCriteria`)
-   * and [required] criteria of those tables in `WHERE`, rendered for this template's database.
-   */
-  fun selectFrom(
-    spec: JoinSpec,
-    select: Collection<SelectFieldOrAsterisk>,
-    required: Map<String, CriteriaDefinition>
-  ): SelectConditionStep<Record> {
-    val subqueryAliases = spec.joins.filterNot { it.mode.joined }.map { it.alias }
-    require(subqueryAliases.isEmpty()) {
-      "select() renders INNER and LEFT joins only; EXISTS / AGGREGATE aliases $subqueryAliases need fetch() / fetchPage()"
-    }
-    val target = { alias: String ->
-      val type = if (alias == spec.rootAlias) spec.root else spec.joins.single { it.alias == alias }.entity
-      JooqConditionMapper.Target(metadata.entity(type)) { name -> joins.field(spec, alias, name) }
-    }
-    val where =
-      required.map { (alias, criteria) ->
-        require(alias in spec.aliases()) { "Unknown table alias '$alias'; declared: ${spec.aliases()}" }
-        conditions.map(criteria, target(alias))
-      }
-    return joins
-      .from(spec, select) { join -> join.onCriteria?.let { conditions.map(it, target(join.alias)) } }
-      .where(where.filterNotNull())
-  }
-
-  /** Column [name] (entity property or raw column) of [alias] in [spec]. */
-  fun field(
-    spec: JoinSpec,
-    alias: String,
-    name: String
-  ): Field<Any?> = joins.field(spec, alias, name)
-
   /** Builds the statement; [resultType] `null` produces `SELECT COUNT(*)` without sort and paging. */
   fun prepare(
     spec: JoinSpec,
     filter: Any?,
-    query: Query,
-    required: Map<String, CriteriaDefinition>,
+    required: List<ColumnCondition>,
     resultType: KClass<*>?,
-    sort: Sort = Sort.unsorted()
-  ): PreparedOperation<Select<*>> = Statement(spec, resultType).build(filter, query, required, query.sort.and(sort))
+    sort: Sort = Sort.unsorted(),
+    limit: Int? = null,
+    offset: Long = 0
+  ): PreparedOperation<Select<*>> = Statement(spec, resultType).build(filter, required, sort, limit, offset)
 
   /** Builds one jOOQ select; jOOQ renders the SQL and collects bind values in text order. */
   private inner class Statement(
@@ -185,7 +145,7 @@ internal class JoinQueryEngine(
 
     private val tables: Map<String, Table<*>> = types.mapValues { (alias, type) -> metadata.table(type, alias) }
 
-    /** Plain conditions per alias: `required AND (query criteria, root only) AND filter`. */
+    /** Plain conditions per alias: `required AND filter`. */
     private lateinit var conditionsByAlias: Map<String, Condition>
 
     /** DTO property name -> expression to sort by, and whether it is a plain column (eligible for `LOWER`). */
@@ -193,31 +153,31 @@ internal class JoinQueryEngine(
 
     fun build(
       filter: Any?,
-      query: Query,
-      required: Map<String, CriteriaDefinition>,
-      sort: Sort
+      required: List<ColumnCondition>,
+      sort: Sort,
+      limit: Int?,
+      offset: Long
     ): PreparedOperation<Select<*>> {
       val fields = filter?.let { QueryMapper.activeFields(it) }.orEmpty()
       val aliasOf = { field: MappedField -> field.field.table.ifEmpty { spec.rootAlias } }
       val (aggregateFields, plainFields) = fields.partition { it.field.aggregate != Aggregate.NONE }
 
-      (fields.map(aliasOf) + required.keys).forEach(::requireAlias)
+      (fields.map(aliasOf) + required.map { it.table.alias }).forEach(::requireAlias)
 
       val plain = plainFields.groupBy(aliasOf).mapValues { (alias, fields) -> fields.map { filter(alias, it) } }
       conditionsByAlias =
         spec
           .aliases()
           .mapNotNull { alias ->
-            val queryCriteria = query.criteria.orElse(null)?.takeIf { alias == spec.rootAlias }
-            val parts = listOfNotNull(required[alias], queryCriteria).mapNotNull { criteria(alias, it) }
-            (parts + plain[alias].orEmpty()).takeIf { it.isNotEmpty() }?.let { alias to allOf(it) }
+            val fixed = required.filter { it.table.alias == alias }.map { condition(alias, it.node) }
+            (fixed + plain[alias].orEmpty()).takeIf { it.isNotEmpty() }?.let { alias to allOf(it) }
           }.toMap()
 
       val selectList: List<SelectField<*>> = if (resultType == null) listOf(DSL.count()) else selectList(resultType)
 
       val filtered =
         joins
-          .from(spec, selectList, ::onCriteria)
+          .from(spec, selectList, ::onCondition)
           .where(whereCondition(aggregateFields.map { aliasOf(it) to it }))
 
       val select: Select<*> =
@@ -226,11 +186,11 @@ internal class JoinQueryEngine(
             filtered
           }
 
-          query.isLimited -> {
+          limit != null -> {
             filtered
               .orderBy(orderBy(sort))
-              .limit(DSL.inline(query.limit))
-              .offset(DSL.inline(query.offset.coerceAtLeast(0)))
+              .limit(DSL.inline(limit))
+              .offset(DSL.inline(offset))
           }
 
           else -> {
@@ -249,8 +209,8 @@ internal class JoinQueryEngine(
             // AGGREGATE conditions scope the aggregate subqueries instead
             JoinMode.AGGREGATE -> null
 
-            // onCriteria joins the subquery only once the EXISTS filter is active
-            JoinMode.EXISTS -> semiJoin(alias, withOnCriteria(alias, condition)!!)
+            // onCondition joins the subquery only once the EXISTS filter is active
+            JoinMode.EXISTS -> semiJoin(alias, withOnCondition(alias, condition)!!)
 
             else -> condition
           }
@@ -261,16 +221,8 @@ internal class JoinQueryEngine(
       alias: String,
       condition: Condition
     ): Condition {
-      val join = spec.joins.single { it.alias == alias }
-      val left = join.on.map { (left, _) -> reference(left) }
-      val right = join.on.map { (_, right) -> column(alias, right) }
-      val table = tables.getValue(alias)
-
-      return if (left.size == 1) {
-        left.single().`in`(DSL.select(right.single()).from(table).where(condition))
-      } else {
-        DSL.row(left).`in`(DSL.select(right).from(table).where(condition))
-      }
+      val (left, right) = spec.joins.single { it.alias == alias }.on
+      return reference(left).`in`(DSL.select(column(alias, right)).from(tables.getValue(alias)).where(condition))
     }
 
     /** `(SELECT FN(arg) FROM t a WHERE (<criteria of a>) AND <correlation to the outer row>)`. */
@@ -300,10 +252,10 @@ internal class JoinQueryEngine(
           Aggregate.NONE -> error("not an aggregate")
         }
 
-      val scope = withOnCriteria(alias, conditionsByAlias[alias])
-      val correlation = join.on.map { (left, right) -> column(alias, right).eq(reference(left)) }
+      val scope = withOnCondition(alias, conditionsByAlias[alias])
+      val correlation = column(alias, join.on.second).eq(reference(join.on.first))
 
-      return DSL.field(DSL.select(call.any()).from(tables.getValue(alias)).where(listOfNotNull(scope) + correlation))
+      return DSL.field(DSL.select(call.any()).from(tables.getValue(alias)).where(listOfNotNull(scope, correlation)))
     }
 
     private fun aggregateCondition(
@@ -321,15 +273,15 @@ internal class JoinQueryEngine(
       return conditions.compare(left, mapped)
     }
 
-    /** A join's `onCriteria` mapped through its entity; the column pairs are rendered by [JooqJoinRenderer]. */
-    private fun onCriteria(join: JoinSpec.Join): Condition? = join.onCriteria?.let { criteria(join.alias, it) }
+    /** A join's `onCondition` mapped through its entity; the column pairs are rendered by [JooqJoinRenderer]. */
+    private fun onCondition(join: JoinSpec.Join): Condition? = join.onCondition?.let { condition(join.alias, it.node) }
 
-    /** `onCriteria AND condition` for a subquery alias; `null` when both are absent. */
-    private fun withOnCriteria(
+    /** `onCondition AND condition` for a subquery alias; `null` when both are absent. */
+    private fun withOnCondition(
       alias: String,
       condition: Condition?
     ): Condition? =
-      listOfNotNull(spec.joins.single { it.alias == alias }.let(::onCriteria), condition)
+      listOfNotNull(spec.joins.single { it.alias == alias }.let(::onCondition), condition)
         .takeIf { it.isNotEmpty() }
         ?.let(::allOf)
 
@@ -339,11 +291,26 @@ internal class JoinQueryEngine(
       mapped: MappedField
     ): Condition = conditions.map(mapped, target(alias))
 
-    /** Spring criteria on [alias]; `null` when empty. */
-    private fun criteria(
+    /** A typed column condition on [alias]; values are converted to the property type. */
+    private fun condition(
       alias: String,
-      criteria: CriteriaDefinition
-    ): Condition? = conditions.map(criteria, target(alias))
+      node: ColumnCondition.Node
+    ): Condition =
+      when (node) {
+        is ColumnCondition.Node.Compare -> {
+          val name = node.column.property.name
+          val type = entities.getValue(alias).getPersistentProperty(name)?.typeInformation
+          conditions.compare(column(alias, name), node.operator, node.value, type, "Condition on ${node.column}")
+        }
+
+        is ColumnCondition.Node.All -> {
+          allOf(node.parts.map { condition(alias, it) })
+        }
+
+        is ColumnCondition.Node.AnyOf -> {
+          DSL.or(node.parts.map { condition(alias, it) })
+        }
+      }
 
     private fun target(alias: String) = JooqConditionMapper.Target(entities.getValue(alias)) { column(alias, it) }
 
