@@ -77,10 +77,10 @@ class R2dbcJoinQuerySqlTest {
     assertEquals(
       "SELECT u.`id` AS `id`, u.`name` AS `name`, " +
         "o.`id` AS `order_id`, o.`status` AS `status`, o.`total` AS `order_total` " +
-        "FROM `join_user` u JOIN `join_order` o ON u.`id` = o.`user_id` " +
-        "WHERE (u.`id` > ? AND (u.`name` LIKE ?)) AND (o.`total` > ? AND (o.`status` = ?)) " +
-        "AND (o.`id` IN (SELECT i.order_id FROM `join_item` i WHERE i.`sku` = ?)) " +
-        "ORDER BY o.`id` ASC LIMIT 10, 5",
+        "FROM `join_user` AS u JOIN `join_order` AS o ON u.`id` = o.`user_id` " +
+        "WHERE (u.`id` > ? AND u.`name` LIKE ? AND o.`total` > ? AND o.`status` = ? " +
+        "AND o.`id` IN (SELECT i.order_id FROM `join_item` AS i WHERE i.`sku` = ?)) " +
+        "ORDER BY o.`id` ASC LIMIT 5 OFFSET 10",
       operation.toQuery()
     )
 
@@ -107,7 +107,7 @@ class R2dbcJoinQuerySqlTest {
       )
 
     assertEquals(
-      "SELECT COUNT(*) FROM `join_user` u JOIN `join_order` o ON u.`id` = o.`user_id` WHERE o.`status` = ?",
+      "SELECT count(*) FROM `join_user` AS u JOIN `join_order` AS o ON u.`id` = o.`user_id` WHERE o.`status` = ?",
       operation.toQuery()
     )
   }
@@ -135,13 +135,14 @@ class R2dbcJoinQuerySqlTest {
         Row::class
       )
 
-    val count = "SELECT COUNT(*) FROM `join_order` s WHERE (s.`status` = ?) AND s.`user_id` = u.`id`"
+    val count = "SELECT count(*) FROM `join_order` AS s WHERE (s.`status` = ? AND s.`user_id` = u.`id`)"
     assertEquals(
       "SELECT u.`id` AS `id`, " +
         "($count) AS `order_count`, " +
-        "(SELECT AVG(s.`total`) FROM `join_order` s WHERE (s.`status` = ?) AND s.`user_id` = u.`id`) AS `avg_total` " +
-        "FROM `join_user` u " +
-        "WHERE (u.`id` > ?) AND (($count) >= ?) " +
+        "(SELECT avg(s.`total`) FROM `join_order` AS s " +
+        "WHERE (s.`status` = ? AND s.`user_id` = u.`id`)) AS `avg_total` " +
+        "FROM `join_user` AS u " +
+        "WHERE (u.`id` > ? AND ($count) >= ?) " +
         "ORDER BY `avg_total` ASC",
       operation.toQuery()
     )
@@ -181,8 +182,8 @@ class R2dbcJoinQuerySqlTest {
 
     assertEquals(
       "SELECT u.`id` AS `id`, o.`status` AS `status`, " +
-        "(SELECT COUNT(*) FROM `join_order` s WHERE (s.`status` = ?) AND s.`user_id` = u.`id`) AS `order_count` " +
-        "FROM `join_user` u LEFT OUTER JOIN `join_order` o ON u.`id` = o.`user_id` AND (o.`total` > ?) " +
+        "(SELECT count(*) FROM `join_order` AS s WHERE (s.`status` = ? AND s.`user_id` = u.`id`)) AS `order_count` " +
+        "FROM `join_user` AS u LEFT OUTER JOIN `join_order` AS o ON (u.`id` = o.`user_id` AND o.`total` > ?) " +
         "WHERE u.`id` > ?",
       operation.toQuery()
     )
@@ -214,6 +215,6 @@ class R2dbcJoinQuerySqlTest {
 
     val sql = joinQuery.prepare(statsSpec, null, Query.empty(), emptyMap(), Row::class, sort).toQuery()
 
-    assertEquals("ORDER BY LOWER(u.`name`) ASC, `last_status` DESC", sql.substringAfter(" FROM `join_user` u "))
+    assertEquals("ORDER BY lower(u.`name`) ASC, `last_status` DESC", sql.substringAfter(" FROM `join_user` AS u "))
   }
 }

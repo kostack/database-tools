@@ -73,17 +73,17 @@ class DatabaseToolsAutoConfigurationTest {
   }
 
   @Test
-  fun `configures jooq dsl context rendering postgres positional parameters`() {
+  fun `configures jooq dsl context rendering positional parameters`() {
     contextRunner.run { context ->
       assertThat(context).hasSingleBean(DSLContext::class.java)
       val dsl = context.getBean(DSLContext::class.java)
-      assertThat(dsl.dialect()).isEqualTo(SQLDialect.POSTGRES)
+      assertThat(dsl.dialect()).isEqualTo(SQLDialect.MYSQL)
       val query =
         dsl
           .selectFrom(DSL.table("users"))
           .where(DSL.field("name").eq("a"))
           .and(DSL.field("age").gt(1))
-      assertThat(query.sql).endsWith("where (name = $1 and age > $2)")
+      assertThat(query.sql).endsWith("where (name = ? and age > ?)")
       assertThat(query.bindValues).containsExactly("a", 1)
     }
   }

@@ -9,6 +9,7 @@ plugins {
 
 val springBootVersion = "4.1.2"
 val swaggerAnnotationsVersion = "2.2.49"
+val jooqVersion = "3.21.9"
 val kotlinVersion: String by project
 val packageId = "database-tools"
 val packageName = "Database Tools"
@@ -35,6 +36,9 @@ dependencies {
   testImplementation(springBootBom)
   testFixturesImplementation(springBootBom)
 
+  // R2dbcJoinQuery builds its SQL with jOOQ, so it is a published runtime dependency.
+  api("org.jooq:jooq:$jooqVersion")
+
   // Provided by the consuming application; not published as dependencies.
   listOf(
     "org.springframework.boot:spring-boot-starter-webflux",
@@ -52,7 +56,6 @@ dependencies {
     "org.springframework.boot:spring-boot-starter-data-mongodb-reactive",
     "org.springframework.boot:spring-boot-starter-data-r2dbc",
     "io.asyncer:r2dbc-mysql",
-    "org.jooq:jooq",
     "io.swagger.core.v3:swagger-annotations:$swaggerAnnotationsVersion"
   ).forEach {
     compileOnly(it)

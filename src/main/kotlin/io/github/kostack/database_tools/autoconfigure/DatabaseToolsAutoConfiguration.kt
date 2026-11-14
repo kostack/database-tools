@@ -8,8 +8,6 @@ import io.github.kostack.database_tools.r2dbc.join.R2dbcJoinQuery
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import org.jooq.DSLContext
 import org.jooq.SQLDialect
-import org.jooq.conf.ParamType
-import org.jooq.conf.Settings
 import org.jooq.impl.DSL
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -83,15 +81,9 @@ class DatabaseToolsAutoConfiguration {
   @Configuration(proxyBeanMethods = false)
   @ConditionalOnClass(name = ["org.jooq.DSLContext"])
   class JooqConfiguration {
-    // Renders bind parameters as $1, $2, ... as expected by the R2DBC Postgres driver.
+    // MySQL R2DBC binds positional `?` markers, jOOQ's default for rendered SQL.
     @Bean
     @ConditionalOnMissingBean
-    fun jooqDsl(): DSLContext =
-      DSL.using(
-        SQLDialect.POSTGRES,
-        Settings()
-          .withParamType(ParamType.NAMED)
-          .withRenderNamedParamPrefix("$")
-      )
+    fun jooqDsl(): DSLContext = DSL.using(SQLDialect.MYSQL)
   }
 }
