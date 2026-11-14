@@ -45,25 +45,26 @@ class JoinQueryBuilder internal constructor(
   inline fun <reified T : Any> fetch(
     filter: Any? = null,
     sort: Sort = Sort.unsorted()
-  ): Flow<T> = fetch(T::class, filter, sort)
-
-  /** [fetch] with an explicit result type. */
-  fun <T : Any> fetch(
-    resultType: KClass<T>,
-    filter: Any? = null,
-    sort: Sort = Sort.unsorted()
-  ): Flow<T> = joinQuery.select(spec, resultType, filter, required = required, sort = sort)
+  ): Flow<T> = fetchOf(T::class, filter, sort)
 
   /** One page plus the total count; `ignoreCase()` orders in [pageable] are supported. */
   suspend inline fun <reified T : Any> fetchPage(
     filter: Any? = null,
     pageable: Pageable
-  ): Pagination<T> = fetchPage(T::class, filter, pageable)
+  ): Pagination<T> = fetchPageOf(T::class, filter, pageable)
 
-  /** [fetchPage] with an explicit result type. */
-  suspend fun <T : Any> fetchPage(
+  // Called by the inline functions above (which cannot call internal code directly); not part of the Kotlin API.
+  @PublishedApi
+  internal fun <T : Any> fetchOf(
     resultType: KClass<T>,
-    filter: Any? = null,
+    filter: Any?,
+    sort: Sort
+  ): Flow<T> = joinQuery.select(spec, resultType, filter, required = required, sort = sort)
+
+  @PublishedApi
+  internal suspend fun <T : Any> fetchPageOf(
+    resultType: KClass<T>,
+    filter: Any?,
     pageable: Pageable
   ): Pagination<T> = joinQuery.toPagination(spec, resultType, pageable, filter, required = required)
 

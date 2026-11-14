@@ -1,5 +1,7 @@
-package io.github.kostack.database_tools.query_mapper
+package io.github.kostack.database_tools.r2dbc.query_builder
 
+import io.github.kostack.database_tools.query_mapper.QueryMapper
+import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.annotation.QueryField
 import io.r2dbc.spi.ConnectionFactories
 import org.jooq.Condition

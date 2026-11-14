@@ -1,6 +1,7 @@
 package io.github.kostack.database_tools.r2dbc.query_builder
 
-enum class JoinMode {
+/** How a table is joined; set by the builder's `join` / `leftJoin` / `existsJoin` / `aggregateJoin`. */
+internal enum class JoinMode {
   /** `JOIN` — rows without a match are dropped; columns can be selected. */
   INNER,
 
@@ -8,16 +9,16 @@ enum class JoinMode {
   LEFT,
 
   /**
-   * Filter only, rendered as a semi-join `left IN (SELECT right FROM … WHERE <criteria>)`.
+   * Filter only, rendered as a semi-join `left IN (SELECT right FROM … WHERE <conditions>)`.
    * Never multiplies root rows and its columns cannot be selected.
-   * Skipped entirely when no criteria target this alias.
+   * Skipped entirely when no filter field or condition targets this alias.
    */
   EXISTS,
 
   /**
    * Source for per-root-row aggregates (`@SelectAggregate`, `@QueryField(aggregate = …)`), rendered as
-   * correlated scalar subqueries `(SELECT AVG(o.total) FROM orders o WHERE o.user_id = u.id AND <criteria>)`.
-   * Never joined as rows; plain criteria on this alias restrict the rows being aggregated.
+   * correlated scalar subqueries `(SELECT AVG(o.total) FROM orders o WHERE o.user_id = u.id AND <conditions>)`.
+   * Never joined as rows; plain conditions on this alias restrict the rows being aggregated.
    */
   AGGREGATE;
 

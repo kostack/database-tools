@@ -2,7 +2,6 @@ package io.github.kostack.database_tools.r2dbc.query_builder
 
 import io.github.kostack.database_tools.paginator.Pagination
 import io.github.kostack.database_tools.query_mapper.Aggregate
-import io.github.kostack.database_tools.query_mapper.JooqConditionMapper
 import io.github.kostack.database_tools.query_mapper.QueryMapper
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
 import io.github.kostack.database_tools.query_mapper.QueryOperator
@@ -55,7 +54,6 @@ internal class JoinQueryEngine(
   private val dialect by lazy { template.dataAccessStrategy.dialect as R2dbcDialect }
   private val metadata = JooqMetadataResolver(template)
   private val dsl: DSLContext by lazy { DSL.using(jooqDialect(dialect), jooqSettings(dialect)) }
-  private val joins by lazy { JooqJoinRenderer(dsl, metadata) }
   private val conditions = JooqConditionMapper(template.converter)
 
   /**
@@ -175,8 +173,9 @@ internal class JoinQueryEngine(
       val selectList: List<SelectField<*>> = if (resultType == null) listOf(DSL.count()) else selectList(resultType)
 
       val filtered =
-        joins
-          .from(spec, selectList, ::onCondition)
+        dsl
+          .select(selectList)
+          .from(joinTree(::onCondition))
           .where(whereCondition(aggregateFields.map { aliasOf(it) to it }))
 
       val select: Select<*> =
@@ -221,10 +220,7 @@ internal class JoinQueryEngine(
       condition: Condition
     ): Condition {
       val join = spec.joinOf(alias)!!
-      return joins
-        .column(
-          join.parentKey
-        ).`in`(DSL.select(joins.column(join.key)).from(tables.getValue(alias)).where(condition))
+      return column(join.parentKey).`in`(DSL.select(column(join.key)).from(tables.getValue(alias)).where(condition))
     }
 
     /** `(SELECT FN(arg) FROM t a WHERE (<criteria of a>) AND <correlation to the outer row>)`. */
@@ -255,7 +251,7 @@ internal class JoinQueryEngine(
         }
 
       val scope = withOnCondition(alias, conditionsByAlias[alias])
-      val correlation = joins.column(join.key).eq(joins.column(join.parentKey))
+      val correlation = column(join.key).eq(column(join.parentKey))
 
       return DSL.field(DSL.select(call.any()).from(tables.getValue(alias)).where(listOfNotNull(scope, correlation)))
     }
@@ -275,7 +271,7 @@ internal class JoinQueryEngine(
       return conditions.compare(left, mapped)
     }
 
-    /** A join's `onCondition` mapped through its entity; the column pairs are rendered by [JooqJoinRenderer]. */
+    /** A join's `onCondition` mapped through its entity; the key equality is rendered by [joinTree]. */
     private fun onCondition(join: JoinSpec.Join): Condition? =
       join.condition?.let { condition(join.table.alias, it.node) }
 
@@ -366,6 +362,20 @@ internal class JoinQueryEngine(
 
       return result
     }
+
+    /** The root table with every `INNER` / `LEFT` join applied, in declaration order. */
+    private fun joinTree(onCondition: (JoinSpec.Join) -> Condition?): Table<*> =
+      spec.joins
+        .filter { it.mode.joined }
+        .fold(tables.getValue(spec.rootAlias)) { from, join ->
+          val table = tables.getValue(join.table.alias)
+          val keys = column(join.parentKey).eq(column(join.key))
+          val on = onCondition(join)?.let { keys.and(it) } ?: keys
+          if (join.mode == JoinMode.LEFT) from.leftOuterJoin(table).on(on) else from.join(table).on(on)
+        }
+
+    /** The jOOQ field of a typed entity column. */
+    private fun column(column: EntityColumn<*, *>): Field<Any?> = column(column.table.alias, column.property.name)
 
     private fun requireAlias(alias: String) =
       require(alias in entities) { "Unknown table alias '$alias'; declared: ${spec.aliases()}" }

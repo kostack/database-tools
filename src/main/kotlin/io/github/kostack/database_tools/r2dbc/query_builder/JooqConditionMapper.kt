@@ -1,6 +1,8 @@
-package io.github.kostack.database_tools.query_mapper
+package io.github.kostack.database_tools.r2dbc.query_builder
 
+import io.github.kostack.database_tools.query_mapper.Aggregate
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
+import io.github.kostack.database_tools.query_mapper.QueryOperator
 import org.jooq.Condition
 import org.jooq.Field
 import org.jooq.impl.DSL

@@ -3,7 +3,7 @@ package io.github.kostack.database_tools.query_mapper.annotation
 import io.github.kostack.database_tools.query_mapper.Aggregate
 
 /**
- * Reads a join-query DTO property from an aggregate over a `JoinMode.AGGREGATE` table,
+ * Reads a join-query DTO property from an aggregate over a table joined with `aggregateJoin(...)`,
  * computed per root row, e.g. `(SELECT AVG(o.total) FROM orders o WHERE o.user_id = u.id)`.
  *
  * Plain criteria on that alias (filter fields or `required`) restrict the rows being aggregated.
@@ -13,7 +13,7 @@ import io.github.kostack.database_tools.query_mapper.Aggregate
 @Target(AnnotationTarget.FIELD)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class SelectAggregate(
-  /** Alias of a table joined with `aggregateJoin(...)` (`JoinMode.AGGREGATE`). */
+  /** Alias of a table joined with `aggregateJoin(...)`. */
   val table: String,
   val function: Aggregate,
   /** Entity property or column to aggregate. Empty only for `COUNT` (counts rows). */

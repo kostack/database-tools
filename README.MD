@@ -517,14 +517,12 @@ query.where(user[User::tenantId] eq tenantId).fetchPage<UserOrderRow>(filter, pa
 | `.fetch<T>(filter, sort)` | `Flow<T>` with all matching rows (e.g. an export) |
 | `.count(filter)` | `Long` |
 
-`fetch(T::class, …)` / `fetchPage(T::class, …)` take the result type explicitly.
-
 - Conditions per table: `.where(...)` conditions AND filter fields. `or` inside a condition keeps its precedence (jOOQ parenthesises nested conditions). Several conditions, or several `.where` calls, are ANDed.
 - Sort properties are DTO property names (`orderId`) or `alias.property` (`o.total`, or `order[Order::total].path`); anything that isn't a plain identifier is rejected.
 - `ignoreCase()` orders (`sort=name,asc,ignorecase`) sort by `LOWER(column)`; they are ignored for aggregate properties.
 - Every value is a bind parameter, converted to the entity property's type like Spring Data does (e.g. `0` → `0L` for a `Long` id, enums and custom converters applied).
 - Builders are immutable: every step returns a new builder, so a base query can be shared and extended.
-- Misuse fails fast with `IllegalArgumentException`: an ON condition that doesn't use the joined table or compares two of its own columns, an extra ON condition (`and = …`) on another table, a condition combining columns of different tables, or a table that was not declared (or was declared under another entity type).
+- Misuse fails fast with `IllegalArgumentException`: an alias that isn't a plain identifier (`table<Order>("o-1")`), an ON condition that doesn't use the joined table, compares two of its own columns or uses an `existsJoin` / `aggregateJoin` table as the parent, an extra ON condition (`and = …`) on another table, a condition combining columns of different tables, or a table that was not declared (or was declared under another entity type).
 
 **Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the filter class and map the `Pageable` with it. `field` may be a DTO property or `alias.property`:
 

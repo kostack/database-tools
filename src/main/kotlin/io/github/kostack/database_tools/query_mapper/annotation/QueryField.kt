@@ -23,7 +23,7 @@ annotation class QueryField(
   val table: String = "",
   /**
    * Compare an aggregate of [name] in the [table] instead of the column itself
-   * (e.g. `AVG(o.total) >= value`). [table] must be a `JoinMode.AGGREGATE` alias;
+   * (e.g. `AVG(o.total) >= value`). [table] must be a table joined with `aggregateJoin(...)`;
    * `COUNT` with an empty [name] counts rows. Only supported by join queries.
    */
   val aggregate: Aggregate = Aggregate.NONE
