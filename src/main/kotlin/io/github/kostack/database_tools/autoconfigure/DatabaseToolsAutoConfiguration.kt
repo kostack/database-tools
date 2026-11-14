@@ -5,6 +5,7 @@ import io.github.kostack.database_tools.paginator.R2dbcPaginator
 import io.github.kostack.database_tools.purger.MongoDbPurger
 import io.github.kostack.database_tools.purger.R2dbcDbPurger
 import io.github.kostack.database_tools.r2dbc.join.R2dbcJoinQuery
+import io.github.kostack.database_tools.r2dbc.join.R2dbcQueryBuilder
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import org.jooq.DSLContext
 import org.jooq.SQLDialect
@@ -59,6 +60,11 @@ class DatabaseToolsAutoConfiguration {
     @ConditionalOnBean(R2dbcEntityTemplate::class)
     @ConditionalOnMissingBean
     fun r2dbcJoinQuery(entityTemplate: R2dbcEntityTemplate): R2dbcJoinQuery = R2dbcJoinQuery(entityTemplate)
+
+    @Bean
+    @ConditionalOnBean(R2dbcEntityTemplate::class)
+    @ConditionalOnMissingBean
+    fun r2dbcQueryBuilder(joinQuery: R2dbcJoinQuery): R2dbcQueryBuilder = R2dbcQueryBuilder(joinQuery)
   }
 
   @Configuration(proxyBeanMethods = false)

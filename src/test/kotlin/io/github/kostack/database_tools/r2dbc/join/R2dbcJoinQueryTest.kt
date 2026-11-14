@@ -633,6 +633,79 @@ abstract class R2dbcJoinQueryContract {
       }
     assertTrue(failure.message!!.contains("@Embedded"), failure.message)
   }
+
+  private val queryBuilder by lazy { R2dbcQueryBuilder(joinQuery) }
+  private val user = table<JoinUser>("u")
+  private val order = table<JoinOrder>("o")
+  private val item = table<JoinItem>("i")
+
+  @Test
+  fun `query builder left joins and fetches a page`() {
+    val page =
+      runBlocking {
+        queryBuilder
+          .from(user)
+          .leftJoin(order)
+          .on(user[JoinUser::id] eq order[JoinOrder::userId])
+          .fetchPage<UserMaybeOrderRow>(pageable = PageRequest.of(0, 3, Sort.by("id", order[JoinOrder::id].path)))
+      }
+
+    assertEquals(4L, page.total)
+    assertEquals(listOf("alice", "alice", "bob"), page.content.map { it.name })
+  }
+
+  @Test
+  fun `query builder applies filters, where and exists joins`() {
+    val query =
+      queryBuilder
+        .from(user)
+        .join(order)
+        .on(order[JoinOrder::userId] eq user[JoinUser::id]) // either order
+        .existsJoin(item)
+        .on(order[JoinOrder::id] eq item[JoinItem::orderId])
+        .where(order, Criteria.where("total").greaterThan(60))
+
+    val rows = runBlocking { query.fetch<UserOrderRow>(UserOrderFilter(sku = "A"), byOrder).toList() }
+
+    assertEquals(listOf(10L, 12L), rows.map { it.orderId })
+    assertEquals(2L, runBlocking { query.count(UserOrderFilter(sku = "A")) })
+  }
+
+  @Test
+  fun `query builder aggregates per root row`() {
+    val stats = table<JoinOrder>("s")
+    val rows =
+      runBlocking {
+        queryBuilder
+          .from(user)
+          .aggregateJoin(stats)
+          .on(user[JoinUser::id] eq stats[JoinOrder::userId])
+          .fetch<UserStatsRow>(query = Query.empty().sort(Sort.by("id")))
+          .toList()
+      }
+
+    assertEquals(listOf(2L, 1L, 0L), rows.map { it.orderCount })
+  }
+
+  @Test
+  fun `query builder rejects ON conditions that skip the joined table`() {
+    val other = table<JoinOrder>("x")
+    val failure =
+      assertThrows<IllegalArgumentException> {
+        queryBuilder.from(user).join(order).on(user[JoinUser::id] eq other[JoinOrder::userId])
+      }
+    assertTrue(failure.message!!.contains("must use one of its columns"), failure.message)
+  }
+
+  @Test
+  fun `query builder rejects undeclared tables`() {
+    assertThrows<IllegalArgumentException> {
+      queryBuilder
+        .from(
+          user
+        ).where(order, Criteria.where("total").greaterThan(1))
+    }
+  }
 }
 
 class R2dbcJoinQueryH2Test : R2dbcJoinQueryContract() {

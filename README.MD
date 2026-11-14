@@ -16,7 +16,10 @@ A Kotlin/Spring library that provides reactive pagination, flexible query mappin
   - [SqlQueryMapper](#sqlquerymapper)
   - [Query Mapper Extensions](#query-mapper-extensions)
   - [Join Queries (R2DBC)](#join-queries-r2dbc)
+    - [Query Builder](#query-builder)
     - [Aggregates](#aggregates)
+    - [SQL Rendering and Binding](#sql-rendering-and-binding)
+    - [Building Your Own jOOQ Queries](#building-your-own-jooq-queries)
 - [Page Request Mapping](#page-request-mapping)
   - [@Sortable](#sortable)
   - [@SortableDefaults](#sortabledefaults)
@@ -67,7 +70,7 @@ The library is published to [Maven Central](https://central.sonatype.com/artifac
 
 ### Requirements
 
-The library declares no transitive dependencies — everything it uses is provided by your application, so it never overrides your versions. Built against **Spring Boot 4.1** (Kotlin 2.4, Java 25).
+The library's only transitive dependency is [jOOQ](https://www.jooq.org/) (`org.jooq:jooq`, open-source edition), which builds the SQL of join queries. Everything else is provided by your application, so it never overrides your versions; Spring Boot's dependency management also aligns the jOOQ version with yours. Built against **Spring Boot 4.1** (Kotlin 2.4, Java 25).
 
 | Always required | Notes |
 |---|---|
@@ -398,6 +401,8 @@ val userDtos: Pagination<UserDto> = userPagination.map { UserDto(it) }
 
 Spring Data's `Query` / `Criteria` are single-table. `R2dbcJoinQuery` (auto-configured when an `R2dbcEntityTemplate` bean exists) runs the same `@QueryField` filters over a root table plus joined tables and maps each row into a DTO.
 
+Join queries can be described with `JoinSpec` (below) or with the typed [Query Builder](#query-builder). The SQL is built with jOOQ and executed through Spring's `R2dbcEntityTemplate`, so entity mapping, converters and transactions work as with any other Spring Data R2DBC query. Supported databases: **MySQL**, **H2** and **PostgreSQL** (see [SQL Rendering and Binding](#sql-rendering-and-binding)).
+
 **1. Describe the joins** with `JoinSpec`. In each `on` pair the left side is `alias.column` of an already declared table (bare name = root), the right side a column of the joined table. Entity property names are mapped to their columns; anything else is used as a raw column name.
 
 ```kotlin
@@ -419,7 +424,7 @@ val spec = JoinSpec.from(User::class, "u")
 ```kotlin
 JoinSpec.from(User::class, "u")
     .join(Order::class, "o", "u.id" to "userId", mode = JoinMode.LEFT, onCriteria = Criteria.where("status").`is`("PAID"))
-// LEFT OUTER JOIN orders o ON u.id = o.user_id AND (o.status = ?)
+// LEFT OUTER JOIN `orders` AS o ON (u.`id` = o.`user_id` AND o.`status` = ?)
 ```
 
 | Mode | Where `onCriteria` goes |
@@ -464,10 +469,10 @@ val page: Pagination<UserOrderRow> = joinQuery.toPagination(spec, UserOrderRow::
 joinQuery.select(spec, UserOrderRow::class, filter, required = mapOf("u" to Criteria.where("tenant_id").`is`(tenantId)))
 ```
 
-- Criteria per alias: `required[alias] AND (query criteria — root only) AND filter fields`; each part is parenthesised.
+- Conditions per alias: `required[alias] AND (query criteria — root only) AND filter fields`. `OR` chains inside `required` / `Query` criteria keep their precedence (jOOQ parenthesises nested conditions).
 - Sort properties are DTO property names (`orderId`) or `alias.column` (`o.total`); anything that isn't a plain identifier is rejected.
 - `ignoreCase()` orders sort by `LOWER(column)` (ignored for aggregate properties). Spring's `Query.sort` rejects them, so pass such orders via the `sort` parameter of `select`, or through the `Pageable` of `toPagination`.
-- Everything is bound as parameters. Bind markers are generated in SQL text order, as MySQL's positional `?` requires.
+- Every value is a bind parameter, converted to the entity property's type like Spring Data does (e.g. `0` → `0L` for a `Long` id, enums and custom converters applied).
 
 **Allowlisting sort fields.** Put `@Sortable` / `@SortableDefaults` on the filter class and map the `Pageable` with it. `field` may be a DTO property or `alias.column`:
 
@@ -485,6 +490,81 @@ joinQuery.toPagination(spec, UserOrderRow::class, pageable.toPageRequest(UserOrd
 ```
 
 Unknown sort fields throw `IllegalArgumentException`, the default sort applies when none is requested, and the page size is capped (the returned `Pagination.limit` reflects the cap) — see [PageRequestMapper](#pagerequestmapper). Without the mapping, any DTO property or `alias.column` may be sorted on.
+
+#### Query Builder
+
+`R2dbcQueryBuilder` (auto-configured next to `R2dbcJoinQuery`) is a typed way to write the same join queries. Tables and columns are referenced through entity classes and properties instead of strings:
+
+```kotlin
+@Service
+class CustomerService(private val queryBuilder: R2dbcQueryBuilder) {
+    private val customer = table<Customer>("c")
+    private val order = table<Order>("o")
+
+    suspend fun grid(filter: CustomerGridFilter, pageable: Pageable): Pagination<CustomerGridDto> =
+        queryBuilder
+            .from(customer)
+            .leftJoin(order)
+            .on(customer[Customer::id] eq order[Order::customerId])
+            .fetchPage<CustomerGridDto>(filter = filter, pageable = pageable)
+}
+```
+
+Filters, `@SelectColumn` / `@SelectAggregate` DTOs, sorting and paging work exactly as with `JoinSpec`. The aliases passed to `table(...)` are the ones `@QueryField(table = …)` and `@SelectColumn(table = …)` refer to.
+
+**Tables and columns**
+
+| Expression | Meaning |
+|---|---|
+| `table<Order>("o")` | the `Order` entity's table under alias `o` |
+| `order[Order::total]` | column `o.total`, resolved through the entity mapping |
+| `order[Order::total].path` | `"o.total"`, e.g. for `Sort.by(order[Order::total].path)` |
+| `a eq b` | ON equality; both sides must have the same type (`Long` vs `Long?` is allowed) |
+| `(a eq b) and (c eq d)` | several ON equalities (composite keys) |
+
+**Joins.** Each join is followed by `.on(...)`. Each equality compares a column of the joined table with one of an already declared table, in either order:
+
+| Builder | `JoinMode` |
+|---|---|
+| `.join(t).on(...)` | `INNER` |
+| `.leftJoin(t).on(...)` | `LEFT` |
+| `.existsJoin(t).on(...)` | `EXISTS` |
+| `.aggregateJoin(t).on(...)` | `AGGREGATE` |
+
+`.on(condition, onCriteria = Criteria.where("status").`is`("PAID"))` adds value conditions on the joined table, as `JoinSpec`'s `onCriteria` does.
+
+**Mandatory criteria.** `.where(table, criteria)` restricts one table, like the `required` map; calling it again for the same table ANDs the criteria.
+
+**Running it**
+
+| Call | Returns |
+|---|---|
+| `.fetch<T>(filter, query, sort)` | `Flow<T>` (limit/offset/sort from `query`, extra `ignoreCase` orders via `sort`) |
+| `.fetchPage<T>(filter, pageable, query)` | `Pagination<T>` with the total count |
+| `.count(filter, query)` | `Long` |
+
+A fuller example — inner join, filter-only join on items, an aggregate, a tenant restriction and a sort-field allowlist:
+
+```kotlin
+val user = table<User>("u")
+val order = table<Order>("o")
+val item = table<Item>("i")
+val stats = table<Order>("s")          // same entity, second alias
+
+val query = queryBuilder
+    .from(user)
+    .join(order).on(user[User::id] eq order[Order::userId])
+    .existsJoin(item).on(order[Order::id] eq item[Item::orderId])
+    .aggregateJoin(stats).on(user[User::id] eq stats[Order::userId])
+    .where(user, Criteria.where("tenantId").`is`(tenantId))
+
+val page = query.fetchPage<UserOrderRow>(filter, pageable.toPageRequest(UserOrderFilter::class))
+val total = query.count(filter)
+```
+
+Builders are immutable: every step returns a new builder, so a base query can be shared and extended. `builder.spec` exposes the underlying `JoinSpec` for the lower-level `R2dbcJoinQuery` API.
+
+Misuse fails fast with `IllegalArgumentException`: an ON condition that doesn't use the joined table, a column compared with another column of its own table, or a table that was not declared (or was declared under another entity type).
 
 #### Aggregates
 
@@ -512,11 +592,11 @@ joinQuery.toPagination(spec, UserStatsRow::class, PageRequest.of(0, 20, Sort.by(
 ```
 
 ```sql
-SELECT u.id AS id, u.name AS name,
-       (SELECT COUNT(*) FROM orders s WHERE (s.status = ?) AND s.user_id = u.id) AS order_count, ...
-FROM users u
-WHERE ((SELECT COUNT(*) FROM orders s WHERE (s.status = ?) AND s.user_id = u.id) >= ?)
-ORDER BY total_sum DESC
+SELECT u.`id` AS `id`, u.`name` AS `name`,
+       (SELECT count(*) FROM `orders` AS s WHERE (s.`status` = ? AND s.`user_id` = u.`id`)) AS `order_count`, ...
+FROM `users` AS u
+WHERE (SELECT count(*) FROM `orders` AS s WHERE (s.`status` = ? AND s.`user_id` = u.`id`)) >= ?
+ORDER BY `total_sum` DESC
 ```
 
 - **Plain criteria on an `AGGREGATE` alias** (filter fields or `required["s"]`) restrict the rows being aggregated, not the root rows. To filter root rows by related rows, add a separate `EXISTS` alias for the same table.
@@ -524,6 +604,93 @@ ORDER BY total_sum DESC
 - Over no rows `COUNT` is `0`; `SUM`, `AVG`, `MIN`, `MAX` are `NULL`, so declare those DTO properties nullable.
 - Sorting by an aggregate DTO property orders by its select alias, so the subquery is not repeated.
 - Each aggregate used in both the select list and a filter runs as its own subquery; index the correlation column (e.g. `orders.user_id`). For report-style grouping across many dimensions, prefer a view or a hand-written query.
+
+#### SQL Rendering and Binding
+
+`R2dbcJoinQuery` renders each statement with a jOOQ `DSLContext` derived from the template's Spring R2DBC dialect, then hands it to Spring as a `PreparedOperation`:
+
+| Spring dialect | jOOQ dialect | Bind markers |
+|---|---|---|
+| `MySqlDialect` | `MYSQL` | `?` |
+| `H2Dialect` | `H2` | `$1, $2, …` |
+| `PostgresDialect` | `POSTGRES` | `$1, $2, …` |
+
+Other dialects (Oracle, SQL Server) throw `UnsupportedOperationException`.
+
+1. Filter fields, `required` / `Query` criteria and `onCriteria` become jOOQ conditions (`JooqConditionMapper`); values are wrapped as bind parameters, never inlined. `LIMIT` / `OFFSET` are inlined numbers.
+2. Table and column names come from the entity mapping (`JooqMetadataResolver`) with Spring's quoting and letter casing; raw names must be plain identifiers.
+3. jOOQ renders the SQL text and returns the bind values in text order — including the values of an aggregate subquery that appears both in the select list and in `WHERE`.
+4. Spring runs the SQL and binds the values by position.
+
+For example, on MySQL:
+
+```kotlin
+joinQuery.select(
+    spec, UserOrderRow::class,
+    UserOrderFilter(name = "ali", status = "PAID", sku = "A"),
+    Query.empty().sort(Sort.by("orderId")).limit(5).offset(10),
+    required = mapOf("u" to Criteria.where("id").greaterThan(0), "o" to Criteria.where("total").greaterThan(1))
+)
+```
+
+```sql
+SELECT u.`id` AS `id`, u.`name` AS `name`, o.`id` AS `order_id`, o.`status` AS `status`, o.`total` AS `order_total`
+FROM `users` AS u JOIN `orders` AS o ON u.`id` = o.`user_id`
+WHERE (u.`id` > ? AND u.`name` LIKE ? AND o.`total` > ? AND o.`status` = ?
+  AND o.`id` IN (SELECT i.order_id FROM `items` AS i WHERE i.`sku` = ?))
+ORDER BY o.`id` ASC LIMIT 5 OFFSET 10
+-- binds: [0, "%ali%", 1, "PAID", "A"]
+```
+
+#### Building Your Own jOOQ Queries
+
+For queries `R2dbcJoinQuery` does not cover (e.g. `GROUP BY` reports), use its building blocks directly. They resolve names through your Spring Data entities, so no jOOQ code generation is needed:
+
+| Class | Purpose |
+|---|---|
+| `JooqMetadataResolver(template)` | `table(Entity::class, alias)`, `field(Entity::class, alias, "property")`, `entity(...)`, `name(SqlIdentifier)` |
+| `JooqJoinRenderer(dsl, metadata)` | `from(spec, selectList)` → `SELECT … FROM root JOIN …` for a `JoinSpec`; `reference(spec, "o.total")`, `field(spec, alias, name)` |
+| `JooqConditionMapper(template.converter)` | `@QueryField` filters and Spring `Criteria` → jOOQ `Condition` |
+
+The auto-configured `DSLContext` bean renders MySQL with positional `?` markers, so its queries can be run with `DatabaseClient` as-is:
+
+```kotlin
+@Component
+class OrderReport(
+    private val dsl: DSLContext,
+    private val template: R2dbcEntityTemplate
+) {
+    private val metadata = JooqMetadataResolver(template)
+    private val joins = JooqJoinRenderer(dsl, metadata)
+    private val conditions = JooqConditionMapper(template.converter)
+
+    private val spec = JoinSpec.from(User::class, "u").join(Order::class, "o", "u.id" to "userId")
+
+    suspend fun revenueByUser(filter: OrderFilter): List<Pair<String, BigDecimal>> {
+        val name = joins.field(spec, "u", "name")
+        val total = joins.field(spec, "o", "total")
+
+        // @QueryField filters on the orders table -> jOOQ conditions
+        val orders = JooqConditionMapper.Target(metadata.entity(Order::class)) { joins.field(spec, "o", it) }
+        val where = SqlQueryMapper.activeFields(filter).map { conditions.map(it, orders) }
+
+        val query = joins
+            .from(spec, listOf(name, DSL.sum(total.coerce(BigDecimal::class.java)).`as`("revenue")))
+            .where(where)
+            .groupBy(name)
+            .orderBy(DSL.field(DSL.name("revenue")).desc())
+
+        return query.bindValues
+            .foldIndexed(template.databaseClient.sql(query.sql)) { index, sql, value -> sql.bind(index, value!!) }
+            .map { row -> row.get("name", String::class.java)!! to row.get("revenue", BigDecimal::class.java)!! }
+            .all()
+            .asFlow()
+            .toList()
+    }
+}
+```
+
+Spring `Criteria` map the same way: ``conditions.map(Criteria.where("status").`is`("PAID"), orders)`` (returns `null` for empty criteria).
 
 ## Page Request Mapping
 
@@ -714,9 +881,10 @@ All beans are registered by Spring Boot auto-configuration and back off when you
 |---|---|
 | `MongoDbPaginator` | a `ReactiveMongoTemplate` bean exists |
 | `MongoDbPurger` | a `ReactiveMongoOperations` bean exists |
-| `R2dbcPaginator`, `R2dbcJoinQuery` | an `R2dbcEntityTemplate` bean exists |
+| `R2dbcPaginator`, `R2dbcJoinQuery`, `R2dbcQueryBuilder` | an `R2dbcEntityTemplate` bean exists |
 | `R2dbcDbPurger` | a `DatabaseClient` bean exists |
 | `TransactionalManager` | Spring's reactive transaction support is on the classpath |
+| `DSLContext` (jOOQ, MySQL dialect, `?` markers) | jOOQ is on the classpath (always, as a dependency of this library) |
 | `R2dbcCustomConversions` (JSON converters) | a `ConnectionFactory` and a Jackson 3 `ObjectMapper` bean exist |
 
 `PageRequestMapper`, `MongoQueryMapper` and `SqlQueryMapper` are plain singletons (`object`s) and need no bean.
