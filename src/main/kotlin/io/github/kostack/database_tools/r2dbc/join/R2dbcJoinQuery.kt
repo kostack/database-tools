@@ -2,6 +2,7 @@ package io.github.kostack.database_tools.r2dbc.join
 
 import io.github.kostack.database_tools.paginator.Pagination
 import io.github.kostack.database_tools.query_mapper.Aggregate
+import io.github.kostack.database_tools.query_mapper.JooqConditionMapper
 import io.github.kostack.database_tools.query_mapper.QueryMapper.MappedField
 import io.github.kostack.database_tools.query_mapper.QueryOperator
 import io.github.kostack.database_tools.query_mapper.SqlQueryMapper
@@ -25,7 +26,6 @@ import org.jooq.conf.ParamType
 import org.jooq.conf.RenderKeywordCase
 import org.jooq.conf.Settings
 import org.jooq.impl.DSL
-import org.springframework.data.core.TypeInformation
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Pageable
 import org.springframework.data.domain.Sort
@@ -36,13 +36,9 @@ import org.springframework.data.r2dbc.dialect.PostgresDialect
 import org.springframework.data.r2dbc.dialect.R2dbcDialect
 import org.springframework.data.relational.core.mapping.RelationalPersistentEntity
 import org.springframework.data.relational.core.mapping.RelationalPersistentProperty
-import org.springframework.data.relational.core.query.Criteria
 import org.springframework.data.relational.core.query.CriteriaDefinition
-import org.springframework.data.relational.core.query.CriteriaDefinition.Combinator
-import org.springframework.data.relational.core.query.CriteriaDefinition.Comparator
 import org.springframework.data.relational.core.query.Query
 import org.springframework.data.relational.core.sql.SqlIdentifier
-import org.springframework.data.util.Pair
 import org.springframework.r2dbc.core.PreparedOperation
 import org.springframework.r2dbc.core.binding.BindTarget
 import kotlin.reflect.KClass
@@ -62,6 +58,7 @@ class R2dbcJoinQuery(
   private val metadata = JooqMetadataResolver(template)
   private val dsl: DSLContext by lazy { DSL.using(jooqDialect(dialect), jooqSettings(dialect)) }
   private val joins by lazy { JooqJoinRenderer(dsl, metadata) }
+  private val conditions = JooqConditionMapper(template.converter)
 
   /**
    * Selects [resultType] rows. Limit and offset come from [query]; ordering is `query.sort` followed by [sort].
@@ -150,8 +147,8 @@ class R2dbcJoinQuery(
 
     private val tables: Map<String, Table<*>> = types.mapValues { (alias, type) -> metadata.table(type, alias) }
 
-    /** Plain criteria per alias: `required AND (query criteria, root only) AND filter`. */
-    private lateinit var criteriaByAlias: Map<String, Criteria>
+    /** Plain conditions per alias: `required AND (query criteria, root only) AND filter`. */
+    private lateinit var conditionsByAlias: Map<String, Condition>
 
     /** DTO property name -> expression to sort by, and whether it is a plain column (eligible for `LOWER`). */
     private val sortable = HashMap<String, kotlin.Pair<Field<Any?>, Boolean>>()
@@ -168,16 +165,14 @@ class R2dbcJoinQuery(
 
       (fields.map(aliasOf) + required.keys).forEach(::requireAlias)
 
-      val plain = plainFields.groupBy(aliasOf, SqlQueryMapper::toCriteria)
-      criteriaByAlias =
+      val plain = plainFields.groupBy(aliasOf).mapValues { (alias, fields) -> fields.map { filter(alias, it) } }
+      conditionsByAlias =
         spec
           .aliases()
           .mapNotNull { alias ->
-            val root = alias == spec.rootAlias
-            SqlQueryMapper
-              .combine(
-                listOfNotNull(required[alias], query.criteria.orElse(null)?.takeIf { root }) + plain[alias].orEmpty()
-              )?.let { alias to it }
+            val queryCriteria = query.criteria.orElse(null)?.takeIf { alias == spec.rootAlias }
+            val parts = listOfNotNull(required[alias], queryCriteria).mapNotNull { criteria(alias, it) }
+            (parts + plain[alias].orEmpty()).takeIf { it.isNotEmpty() }?.let { alias to allOf(it) }
           }.toMap()
 
       val selectList: List<SelectField<*>> = if (resultType == null) listOf(DSL.count()) else selectList(resultType)
@@ -211,15 +206,15 @@ class R2dbcJoinQuery(
     private fun whereCondition(aggregateFields: List<kotlin.Pair<String, MappedField>>): Condition =
       allOf(
         spec.aliases().mapNotNull { alias ->
-          val criteria = criteriaByAlias[alias] ?: return@mapNotNull null
+          val condition = conditionsByAlias[alias] ?: return@mapNotNull null
           when (spec.modeOf(alias)) {
-            // AGGREGATE criteria scope the aggregate subqueries instead
+            // AGGREGATE conditions scope the aggregate subqueries instead
             JoinMode.AGGREGATE -> null
 
             // onCriteria joins the subquery only once the EXISTS filter is active
-            JoinMode.EXISTS -> semiJoin(alias, map(alias, withOnCriteria(alias, criteria)!!))
+            JoinMode.EXISTS -> semiJoin(alias, withOnCriteria(alias, condition)!!)
 
-            else -> map(alias, criteria)
+            else -> condition
           }
         } + aggregateFields.map { (alias, field) -> aggregateCondition(alias, field) }
       )
@@ -267,7 +262,7 @@ class R2dbcJoinQuery(
           Aggregate.NONE -> error("not an aggregate")
         }
 
-      val scope = withOnCriteria(alias, criteriaByAlias[alias])?.let { map(alias, it) }
+      val scope = withOnCriteria(alias, conditionsByAlias[alias])
       val correlation = join.on.map { (left, right) -> column(alias, right).eq(reference(left)) }
 
       return DSL.field(DSL.select(call.any()).from(tables.getValue(alias)).where(listOfNotNull(scope) + correlation))
@@ -281,153 +276,38 @@ class R2dbcJoinQuery(
       val owner = "QueryField ${mapped.propertyName}"
       val left = aggregate(alias, field.aggregate, field.name, owner)
 
-      return when (field.operator) {
-        QueryOperator.EQ -> left.eq(bind(mapped))
-        QueryOperator.NE -> left.ne(bind(mapped))
-        QueryOperator.GT -> left.gt(bind(mapped))
-        QueryOperator.GTE -> left.ge(bind(mapped))
-        QueryOperator.LT -> left.lt(bind(mapped))
-        QueryOperator.LTE -> left.le(bind(mapped))
-        QueryOperator.IN -> left.`in`(bindAll(mapped))
-        QueryOperator.NOT_IN -> left.notIn(bindAll(mapped))
-        QueryOperator.IS_NULL, QueryOperator.NOT_EXISTS -> left.isNull
-        QueryOperator.IS_NOT_NULL, QueryOperator.EXISTS -> left.isNotNull
-        else -> throw UnsupportedOperationException("$owner: ${field.operator} is not supported on aggregates")
+      if (field.operator !in AGGREGATE_OPERATORS) {
+        throw UnsupportedOperationException("$owner: ${field.operator} is not supported on aggregates")
       }
-    }
-
-    private fun bind(mapped: MappedField): Field<Any?> {
-      val value =
-        requireNotNull(mapped.value) { "QueryField ${mapped.propertyName}: ${mapped.field.operator} needs a value" }
-      return param(template.converter.writeValue(value, TypeInformation.of(value.javaClass)) ?: value)
-    }
-
-    private fun bindAll(mapped: MappedField): List<Field<Any?>> {
-      val values =
-        mapped.value as? Collection<*> ?: throw IllegalArgumentException(
-          "QueryField ${mapped.propertyName}: ${mapped.field.operator} requires a Collection value"
-        )
-      return values.filterNotNull().map {
-        param(template.converter.writeValue(it, TypeInformation.of(it.javaClass)) ?: it)
-      }
+      // Aggregate values are converted by their own type: the aggregate result has no entity property.
+      return conditions.compare(left, mapped)
     }
 
     /** A join's `onCriteria` mapped through its entity; the column pairs are rendered by [JooqJoinRenderer]. */
-    private fun onCriteria(join: JoinSpec.Join): Condition? =
-      SqlQueryMapper.combine(listOfNotNull(join.onCriteria))?.let { map(join.alias, it) }
+    private fun onCriteria(join: JoinSpec.Join): Condition? = join.onCriteria?.let { criteria(join.alias, it) }
 
-    /** `onCriteria AND criteria` for a subquery alias; `null` when both are absent. */
+    /** `onCriteria AND condition` for a subquery alias; `null` when both are absent. */
     private fun withOnCriteria(
       alias: String,
-      criteria: CriteriaDefinition?
-    ): Criteria? = SqlQueryMapper.combine(listOfNotNull(spec.onCriteriaOf(alias), criteria))
-
-    /**
-     * Maps Spring [CriteriaDefinition]s on [alias] to a jOOQ condition, following Spring's R2DBC `QueryMapper`:
-     * property names map to their columns and values are converted to the property type.
-     */
-    private fun map(
-      alias: String,
-      criteria: CriteriaDefinition
-    ): Condition = unroll(alias, criteria) ?: DSL.noCondition()
-
-    /** A criteria chain links back to its predecessors: walk to the head, then combine forwards. */
-    private fun unroll(
-      alias: String,
-      criteria: CriteriaDefinition
-    ): Condition? =
-      generateSequence(criteria) { if (it.hasPrevious()) it.previous else null }
-        .toList()
-        .asReversed()
-        .fold(null as Condition?) { mapped, next -> combine(mapped, next, condition(alias, next)) }
-
-    private fun condition(
-      alias: String,
-      criteria: CriteriaDefinition
-    ): Condition? =
-      when {
-        criteria.isEmpty -> {
-          null
-        }
-
-        criteria.isGroup -> {
-          criteria.group
-            .filterNot { it.isEmpty }
-            .fold(null as Condition?) { mapped, next -> combine(mapped, next, unroll(alias, next)) }
-        }
-
-        else -> {
-          predicate(alias, criteria)
-        }
-      }
-
-    private fun combine(
-      mapped: Condition?,
-      criteria: CriteriaDefinition,
       condition: Condition?
     ): Condition? =
-      when {
-        condition == null -> mapped
-        mapped == null -> condition
-        criteria.combinator == Combinator.OR -> mapped.or(condition)
-        else -> mapped.and(condition)
-      }
+      listOfNotNull(spec.joins.single { it.alias == alias }.let(::onCriteria), condition)
+        .takeIf { it.isNotEmpty() }
+        ?.let(::allOf)
 
-    private fun predicate(
+    /** A `@QueryField` filter on a plain column of [alias]. */
+    private fun filter(
+      alias: String,
+      mapped: MappedField
+    ): Condition = conditions.map(mapped, target(alias))
+
+    /** Spring criteria on [alias]; `null` when empty. */
+    private fun criteria(
       alias: String,
       criteria: CriteriaDefinition
-    ): Condition {
-      val name = requireNotNull(criteria.column) { "Criteria on alias '$alias' has no column" }.reference
-      val property = entities.getValue(alias).getPersistentProperty(name)
-      val type: TypeInformation<*> = property?.typeInformation ?: TypeInformation.OBJECT
-      val elementType: TypeInformation<*> = type.actualType ?: TypeInformation.OBJECT
-      val column = column(alias, name)
-      val ignoreCase = criteria.isIgnoreCase
-      val compared = if (ignoreCase) DSL.upper(column.text()).any() else column
+    ): Condition? = conditions.map(criteria, target(alias))
 
-      fun convert(
-        value: Any?,
-        type: TypeInformation<*>
-      ): Any? = value?.let { template.converter.writeValue(it, type) ?: it }
-
-      fun value(upper: Boolean = false): Field<Any?> =
-        param(convert(criteria.value, type)).let { if (upper && ignoreCase) DSL.upper(it.text()).any() else it }
-
-      fun values(): List<Field<Any?>> =
-        when (val value = criteria.value) {
-          is Iterable<*> -> value.map { param(convert(it, elementType)) }
-          else -> listOf(param(convert(value, type)))
-        }
-
-      fun range(): kotlin.Pair<Field<Any?>, Field<Any?>> {
-        @Suppress("UNCHECKED_CAST")
-        val pair =
-          requireNotNull(criteria.value as? Pair<Any, Any>) { "${criteria.comparator} on '$name' needs a Pair" }
-        val wrap = { it: Any ->
-          param(convert(it, elementType)).let { p -> if (ignoreCase) DSL.upper(p.text()).any() else p }
-        }
-        return wrap(pair.first) to wrap(pair.second)
-      }
-
-      return when (criteria.comparator) {
-        Comparator.EQ -> compared.eq(value(upper = true))
-        Comparator.NEQ -> compared.ne(value(upper = true))
-        Comparator.LT -> column.lt(value())
-        Comparator.LTE -> column.le(value())
-        Comparator.GT -> column.gt(value())
-        Comparator.GTE -> column.ge(value())
-        Comparator.LIKE -> compared.like(value(upper = true).text())
-        Comparator.NOT_LIKE -> compared.notLike(value(upper = true).text())
-        Comparator.IN -> compared.`in`(values())
-        Comparator.NOT_IN -> compared.notIn(values())
-        Comparator.IS_NULL -> column.isNull
-        Comparator.IS_NOT_NULL -> column.isNotNull
-        Comparator.IS_TRUE, Comparator.IS_FALSE -> column.eq(value())
-        Comparator.BETWEEN -> range().let { (low, high) -> compared.between(low, high) }
-        Comparator.NOT_BETWEEN -> range().let { (low, high) -> compared.notBetween(low, high) }
-        Comparator.INITIAL, null -> throw IllegalArgumentException("Criteria on '$name' has no comparator")
-      }
-    }
+    private fun target(alias: String) = JooqConditionMapper.Target(entities.getValue(alias)) { column(alias, it) }
 
     /**
      * DTO property or `alias.column`. `ignoreCase` sorts by `LOWER(column)`; it is ignored for aggregate
@@ -514,7 +394,22 @@ class R2dbcJoinQuery(
   }
 
   private companion object {
-    fun param(value: Any?): Field<Any?> = DSL.value(value).any()
+    /** Comparisons that make sense on an aggregate value (no text matching). */
+    val AGGREGATE_OPERATORS =
+      setOf(
+        QueryOperator.EQ,
+        QueryOperator.NE,
+        QueryOperator.GT,
+        QueryOperator.GTE,
+        QueryOperator.LT,
+        QueryOperator.LTE,
+        QueryOperator.IN,
+        QueryOperator.NOT_IN,
+        QueryOperator.IS_NULL,
+        QueryOperator.NOT_EXISTS,
+        QueryOperator.IS_NOT_NULL,
+        QueryOperator.EXISTS
+      )
 
     /** `AND` of [conditions]; no conditions render nothing (`DSL.and()` of nothing would render `TRUE`). */
     fun allOf(conditions: List<Condition>): Condition =

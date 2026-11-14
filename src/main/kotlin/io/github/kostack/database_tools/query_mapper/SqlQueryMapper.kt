@@ -157,9 +157,9 @@ object SqlQueryMapper : QueryMapper<Criteria>() {
       .replace("%", "\\%")
       .replace("_", "\\_")
 
-  private fun containsPattern(value: String): String = "%${escapeLike(value)}%"
+  internal fun containsPattern(value: String): String = "%${escapeLike(value)}%"
 
-  private fun startsWithPattern(value: String): String = "${escapeLike(value)}%"
+  internal fun startsWithPattern(value: String): String = "${escapeLike(value)}%"
 
-  private fun endsWithPattern(value: String): String = "%${escapeLike(value)}"
+  internal fun endsWithPattern(value: String): String = "%${escapeLike(value)}"
 }
