@@ -293,6 +293,19 @@ abstract class R2dbcJoinQueryContract {
   }
 
   @Test
+  fun `rejects sorting by a table outside the result rows`() {
+    val error = assertThrows<IllegalArgumentException> { select(sort = Sort.by("i.sku")) }
+    assertTrue("existsJoin" in error.message.orEmpty())
+  }
+
+  @Test
+  fun `rejects sorting by raw column names`() {
+    // `user_id` is a real column of join_order, but not an entity property
+    assertThrows<IllegalArgumentException> { select(sort = Sort.by("o.user_id")) }
+    assertThrows<IllegalArgumentException> { select(sort = Sort.by("password_hash")) }
+  }
+
+  @Test
   fun `rejects unknown alias in filter`() {
     data class BadFilter(
       @QueryField(table = "x") val name: String? = "a"

@@ -24,4 +24,14 @@ internal enum class JoinMode {
 
   /** Whether the table is part of the FROM clause (its columns can be selected and referenced). */
   val joined: Boolean get() = this == INNER || this == LEFT
+
+  /** The [io.github.kostack.database_tools.r2dbc.grid.GridQuery] function declaring this mode, for error messages. */
+  val builderName: String
+    get() =
+      when (this) {
+        INNER -> "join"
+        LEFT -> "leftJoin"
+        EXISTS -> "existsJoin"
+        AGGREGATE -> "aggregateJoin"
+      }
 }

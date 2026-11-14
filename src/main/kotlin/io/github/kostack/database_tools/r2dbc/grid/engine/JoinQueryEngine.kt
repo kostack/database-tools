@@ -60,7 +60,7 @@ internal class JoinQueryEngine(
   private val conditions = JooqConditionMapper(template.converter)
 
   /**
-   * Selects [resultType] rows, ordered by [sort] (DTO property names or `alias.column`; `ignoreCase()` orders
+   * Selects [resultType] rows, ordered by [sort] (DTO property names or `alias.property`; `ignoreCase()` orders
    * are rendered as `LOWER(column)`), optionally paged with [limit] / [offset].
    *
    * @param required fixed conditions, each on one table, placed first for that table.
@@ -383,11 +383,23 @@ internal class JoinQueryEngine(
     private fun requireAlias(alias: String) =
       require(alias in entities) { "Unknown table alias '$alias'; declared: ${spec.aliases()}" }
 
-    /** `alias.name` or bare `name` (root table). */
+    /**
+     * A sort property: `alias.property` or bare `property` (root table). Sort properties may come from clients,
+     * so only entity properties of the root and `join` / `leftJoin` tables are accepted, never raw column names.
+     */
     private fun reference(qualified: String): Field<Any?> {
       val alias = qualified.substringBefore('.', spec.rootAlias)
-      require(alias in entities) { "Unknown table alias '$alias' in '$qualified'; declared: ${spec.aliases()}" }
-      return column(alias, qualified.substringAfter('.'))
+      require(alias in entities) { "Unknown table alias '$alias' in sort '$qualified'; declared: ${spec.aliases()}" }
+      val mode = spec.modeOf(alias)
+      require(mode?.joined != false) {
+        "Cannot sort by '$qualified': '$alias' is an ${mode?.builderName} table, not part of the result rows"
+      }
+      val name = qualified.substringAfter('.')
+      val property = entities.getValue(alias).getPersistentProperty(name)
+      require(property != null && !property.isEmbedded) {
+        "Unknown sort property '$qualified': ${types.getValue(alias).simpleName} has no column property '$name'"
+      }
+      return column(alias, name)
     }
 
     /** Entity property name -> its column; otherwise [fallback] or [name] as a raw (validated) column. */
