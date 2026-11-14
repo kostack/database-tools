@@ -61,6 +61,7 @@ class R2dbcJoinQuery(
   private val dialect by lazy { template.dataAccessStrategy.dialect as R2dbcDialect }
   private val metadata = JooqMetadataResolver(template)
   private val dsl: DSLContext by lazy { DSL.using(jooqDialect(dialect), jooqSettings(dialect)) }
+  private val joins by lazy { JooqJoinRenderer(dsl, metadata) }
 
   /**
    * Selects [resultType] rows. Limit and offset come from [query]; ordering is `query.sort` followed by [sort].
@@ -181,18 +182,10 @@ class R2dbcJoinQuery(
 
       val selectList: List<SelectField<*>> = if (resultType == null) listOf(DSL.count()) else selectList(resultType)
 
-      var from: Table<*> = tables.getValue(spec.rootAlias)
-      spec.joins.filter { it.mode.joined }.forEach { join ->
-        val table = tables.getValue(join.alias)
-        from =
-          if (join.mode == JoinMode.LEFT) {
-            from.leftOuterJoin(table).on(onCondition(join))
-          } else {
-            from.join(table).on(onCondition(join))
-          }
-      }
-
-      val filtered = dsl.select(selectList).from(from).where(whereCondition(aggregateFields.map { aliasOf(it) to it }))
+      val filtered =
+        joins
+          .from(spec, selectList, ::onCriteria)
+          .where(whereCondition(aggregateFields.map { aliasOf(it) to it }))
 
       val select: Select<*> =
         when {
@@ -319,11 +312,9 @@ class R2dbcJoinQuery(
       }
     }
 
-    private fun onCondition(join: JoinSpec.Join): Condition {
-      val columns = join.on.map { (left, right) -> reference(left).eq(column(join.alias, right)) }
-      val extra = SqlQueryMapper.combine(listOfNotNull(join.onCriteria))?.let { map(join.alias, it) }
-      return allOf(columns + listOfNotNull(extra))
-    }
+    /** A join's `onCriteria` mapped through its entity; the column pairs are rendered by [JooqJoinRenderer]. */
+    private fun onCriteria(join: JoinSpec.Join): Condition? =
+      SqlQueryMapper.combine(listOfNotNull(join.onCriteria))?.let { map(join.alias, it) }
 
     /** `onCriteria AND criteria` for a subquery alias; `null` when both are absent. */
     private fun withOnCriteria(
@@ -495,7 +486,7 @@ class R2dbcJoinQuery(
     private fun reference(qualified: String): Field<Any?> {
       val alias = qualified.substringBefore('.', spec.rootAlias)
       require(alias in entities) { "Unknown table alias '$alias' in '$qualified'; declared: ${spec.aliases()}" }
-      return column(alias, qualified.substringAfter('.'))
+      return joins.reference(spec, qualified)
     }
 
     /** Entity property name -> its column; otherwise [fallback] or [name] as a raw (validated) column. */
