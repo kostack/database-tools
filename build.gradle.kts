@@ -52,6 +52,7 @@ dependencies {
     "org.springframework.boot:spring-boot-starter-data-mongodb-reactive",
     "org.springframework.boot:spring-boot-starter-data-r2dbc",
     "io.asyncer:r2dbc-mysql",
+    "org.jooq:jooq",
     "io.swagger.core.v3:swagger-annotations:$swaggerAnnotationsVersion"
   ).forEach {
     compileOnly(it)
@@ -73,7 +74,7 @@ dependencies {
 
 kotlin {
   compilerOptions {
-    freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+    freeCompilerArgs.addAll("-Xjsr305=strict")
   }
 }
 
@@ -187,5 +188,12 @@ mavenPublishing {
       developerConnection = "scm:git:ssh://github.com/kostack/$packageId.git"
       url = "https://github.com/kostack/$packageId"
     }
+  }
+}
+
+// Signing is required for Maven Central only; publishToMavenLocal works without signing keys.
+configure<SigningExtension> {
+  setRequired {
+    gradle.taskGraph.allTasks.any { it is PublishToMavenRepository }
   }
 }

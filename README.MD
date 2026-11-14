@@ -818,6 +818,28 @@ class OrderRepositoryTest(
 
 The R2DBC join-query tests run against H2 and against MySQL 8.4 via [Testcontainers](https://testcontainers.com). The MySQL tests need a running Docker daemon and are **skipped** when Docker is unavailable.
 
+### Publishing to Maven Local
+
+To try a local build in another project, publish it to your local Maven repository (`~/.m2/repository`). Signing keys are not needed:
+
+```bash
+./gradlew publishToMavenLocal                          # version 1.0.0
+./gradlew publishToMavenLocal -PprojectVersion=1.2.3   # custom version
+```
+
+Then add `mavenLocal()` to the consuming project's repositories:
+
+```kotlin
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+dependencies {
+    implementation("io.github.kostack:database-tools:1.2.3")
+}
+```
+
 ---
 
 ## License

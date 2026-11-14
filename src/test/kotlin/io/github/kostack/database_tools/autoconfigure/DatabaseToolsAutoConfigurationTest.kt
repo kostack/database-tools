@@ -8,6 +8,9 @@ import io.github.kostack.database_tools.r2dbc.join.R2dbcJoinQuery
 import io.github.kostack.database_tools.r2dbc.transactional.TransactionalManager
 import io.mockk.mockk
 import org.assertj.core.api.Assertions.assertThat
+import org.jooq.DSLContext
+import org.jooq.SQLDialect
+import org.jooq.impl.DSL
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.FilteredClassLoader
@@ -67,6 +70,29 @@ class DatabaseToolsAutoConfigurationTest {
         assertThat(context).doesNotHaveBean(MongoDbPaginator::class.java)
         assertThat(context).doesNotHaveBean(MongoDbPurger::class.java)
       }
+  }
+
+  @Test
+  fun `configures jooq dsl context rendering postgres positional parameters`() {
+    contextRunner.run { context ->
+      assertThat(context).hasSingleBean(DSLContext::class.java)
+      val dsl = context.getBean(DSLContext::class.java)
+      assertThat(dsl.dialect()).isEqualTo(SQLDialect.POSTGRES)
+      val query =
+        dsl
+          .selectFrom(DSL.table("users"))
+          .where(DSL.field("name").eq("a"))
+          .and(DSL.field("age").gt(1))
+      assertThat(query.sql).endsWith("where (name = $1 and age > $2)")
+      assertThat(query.bindValues).containsExactly("a", 1)
+    }
+  }
+
+  @Test
+  fun `does not configure jooq dsl context when jooq is missing`() {
+    contextRunner
+      .withClassLoader(FilteredClassLoader("org.jooq"))
+      .run { context -> assertThat(context).doesNotHaveBean(DSLContext::class.java) }
   }
 
   @Test

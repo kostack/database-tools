@@ -7,10 +7,7 @@ import io.swagger.v3.oas.annotations.media.Schema
 @Schema(description = "A generic Pagination class for API responses.")
 data class Pagination<T>(
   @field:ArraySchema(
-    schema =
-      Schema(
-        description = "The list of items for the current page."
-      )
+    arraySchema = Schema(description = "The list of items for the current page.")
   )
   @field:JsonProperty("content")
   val content: List<T>,
